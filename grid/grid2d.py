@@ -113,7 +113,7 @@ class Grid2D(Grid):
             ulx = int(np.ceil(ulx))
             lrx = int(np.floor(lrx))
             lry = int(np.ceil(lry))
-            self._data = self._data[uly:lry,ulx:lrx]
+            self._data = self._data[uly:lry+1,ulx:lrx+1]
             newymax,newxmin = self.getLatLon(uly,ulx)
             newymin,newxmax = self.getLatLon(lry,lrx)
             self._geodict['xmin'] = newxmin
@@ -337,6 +337,54 @@ class Grid2D(Grid):
         self._geodict['xdim'] = geodict['xdim']
         self._geodict['ydim'] = geodict['ydim']
 
+def _test_trim():
+    geodict = {}
+    geodict['xmin'] = 0.5
+    geodict['ymax'] = 3.5
+    geodict['xmax'] = 3.5
+    geodict['ymin'] = 0.5
+    geodict['xdim'] = 1.0
+    geodict['ydim'] = 1.0
+    geodict['nrows'] = 4
+    geodict['ncols'] = 4
+    data = np.arange(0,16).reshape(4,4)
+    grid = Grid2D(data,geodict)
+    newbounds = (1.5,2.5,1.5,2.5)
+    print grid.getData()
+    grid.trim(newbounds,resample=False)
+    print grid.getData()
+
+    geodict = {}
+    geodict['xmin'] = 0.5
+    geodict['ymax'] = 3.5
+    geodict['xmax'] = 3.5
+    geodict['ymin'] = 0.5
+    geodict['xdim'] = 1.0
+    geodict['ydim'] = 1.0
+    geodict['nrows'] = 4
+    geodict['ncols'] = 4
+    data = np.arange(0,16).reshape(4,4)
+    grid = Grid2D(data,geodict)
+    newbounds = (1.0,3.0,1.0,3.0)
+    print grid.getData()
+    grid.trim(newbounds,resample=True)
+    print grid.getData()
+    print grid.getGeoDict()
+
+def _test_pad():
+    geodict = {}
+    geodict['xmin'] = 0.5
+    geodict['ymax'] = 3.5
+    geodict['xmax'] = 3.5
+    geodict['ymin'] = 0.5
+    geodict['xdim'] = 1.0
+    geodict['ydim'] = 1.0
+    geodict['nrows'] = 4
+    geodict['ncols'] = 4
+    data = np.arange(0,16).reshape(4,4)
+    grid = Grid2D(data,geodict)
+
+    
     
 def _test():
     xmin = 118.5
@@ -376,7 +424,7 @@ def _test():
     print grid.getData().shape
     
 if __name__ == '__main__':
-    _test()
+    _test_trim()
     
     
         

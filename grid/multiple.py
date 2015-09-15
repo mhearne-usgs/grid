@@ -1,4 +1,5 @@
-from gridbase import Grid,GridException
+from gridbase import Grid
+from dataset import DataSetException
 from grid2d import Grid2D
 import abc
 from collections import OrderedDict
@@ -14,7 +15,7 @@ class MultiGrid(Grid):
            OrderedDict of Grid2D objects.
         :param descriptions:
            list of layer descriptions, or None
-        :raises GridException:
+        :raises DataSetException:
           When:
            - input layer geodicts does not contain required keys
            - input layer geodicts do not match each other.
@@ -22,11 +23,11 @@ class MultiGrid(Grid):
            - input layers is not an OrderedDict
         """
         if not isinstance(layers,OrderedDict):
-            raise GridException('Input layers must be of type OrderedDict.')
+            raise DataSetException('Input layers must be of type OrderedDict.')
         if descriptions is None:
             descriptions = ['' for l in layers.keys()]
         if len(descriptions) != len(layers):
-            raise GridException('List of descriptions does not match length of layers.')
+            raise DataSetException('List of descriptions does not match length of layers.')
 
         lnames = layers.keys()
         for i in range(0,len(lnames)):
@@ -36,7 +37,7 @@ class MultiGrid(Grid):
             geodict = layer.getGeoDict()
             if not set(geodict.keys()).issuperset(self.reqfields):
                 missing = self.reqfields - set(geodict.keys())
-                raise GridException('Missing required keys "%s"' % str(missing))
+                raise DataSetException('Missing required keys "%s"' % str(missing))
             self._layers[layername] = layer
             self._descriptions[layername] = desc
 
@@ -70,12 +71,12 @@ class MultiGrid(Grid):
           2D numpy array of data
         :param desc:
           Optional text description of layer
-        :raises GridException:
+        :raises DataSetException:
           If the data layer dimensions don't match the geodict.
         """
         nr,nc = data.shape
         if nr != self._geodict['nrows'] or nc != self._geodict['ncols']:
-            raise GridException("Data layer dimensions don't match those already in the grid")
+            raise DataSetException("Data layer dimensions don't match those already in the grid")
         self._layers[name] = Grid2D(data,self._geodict.copy())
         self._descriptions[name] = desc
 
@@ -87,11 +88,11 @@ class MultiGrid(Grid):
           Name of data layer.
         :returns:
           Grid2D object.
-        :raises GridException:
+        :raises DataSetException:
           When name is not found in list of layer names.
         """
         if name not in self._layers.keys():
-            raise GridException('Layer "%s" not in list of layers.' % name)
+            raise DataSetException('Layer "%s" not in list of layers.' % name)
         return self._layers[name]
 
     def getData(self):
@@ -210,9 +211,9 @@ class MultiGrid(Grid):
             geodict dictionary from another grid whose extents are inside the extent of this grid.
         :keyword method: 
             Optional interpolation method - ['linear', 'cubic','quintic','nearest']
-        :raises GridException: 
+        :raises DataSetException: 
            If the Grid object upon which this function is being called is not completely contained by the grid to which this Grid is being resampled.
-        :raises GridException: 
+        :raises DataSetException: 
            If the resulting interpolated grid shape does not match input geodict.
 
         This function modifies the internal griddata and geodict object variables.

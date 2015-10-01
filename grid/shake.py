@@ -6,6 +6,7 @@ from datetime import datetime
 from collections import OrderedDict
 import re
 import sys
+import StringIO
 
 #third party
 from gridbase import Grid
@@ -121,7 +122,7 @@ def readShakeFile(fileobj):
     data = data[:,2:] #throw away lat/lon columns
     for i in range(0,len(fields)):
         field = fields[i]
-        layers[field] = np.flipud(data[:,i].reshape(nrows,ncols))
+        layers[field] = data[:,i].reshape(nrows,ncols)
 
     #create the geodict from the grid_spec element
     geodict = {'xmin':specdict['lon_min'],
@@ -135,20 +136,6 @@ def readShakeFile(fileobj):
     
     return (layers,geodict,eventdict,griddict,uncertainties)
 
-def getShakeDict(shakefile):
-    f = open(shakefile,'rt')
-    griddict,eventdict,specdict,fields,uncertainties = getHeaderData(f)
-    f.close()
-    geodict = {'xmin':specdict['lon_min'],
-               'xmax':specdict['lon_max'],
-               'ymin':specdict['lat_min'],
-               'ymax':specdict['lat_max'],
-               'xdim':specdict['nominal_lon_spacing'],
-               'ydim':specdict['nominal_lat_spacing'],
-               'nrows':specdict['nlat'],
-               'ncols':specdict['nlon']}
-    return geodict
-        
 class ShakeGrid(MultiGrid):
     def __init__(self,layers,geodict,eventDict,shakeDict,uncertaintyDict):
         self._layers = OrderedDict()
@@ -158,9 +145,31 @@ class ShakeGrid(MultiGrid):
         self.setEventDict(eventDict)
         self.setShakeDict(shakeDict)
         self.setUncertaintyDict(uncertaintyDict)
-        
+
     @classmethod
-    def load(cls,shakefilename,bounds=None,resample=False,method='linear',padValue=None):
+    def getFileGeoDict(cls,shakefile):
+        isFileObj = False
+        if not hasattr(shakefilename,'read'):
+            shakefile = open(shakefilename,'r')
+        else:
+            isFileObj = True
+            shakefile = shakefilename
+        griddict,eventdict,specdict,fields,uncertainties = getHeaderData(f)
+        if isFileObj:
+            shakefile.close()
+        geodict = {'xmin':specdict['lon_min'],
+                   'xmax':specdict['lon_max'],
+                   'ymin':specdict['lat_min'],
+                   'ymax':specdict['lat_max'],
+                   'xdim':specdict['nominal_lon_spacing'],
+                   'ydim':specdict['nominal_lat_spacing'],
+                   'nrows':specdict['nlat'],
+                   'ncols':specdict['nlon']}
+        return geodict
+
+    @classmethod
+    def load(cls,shakefilename,samplegeodict=None,resample=False,method='linear',doPadding=False,padValue=np.nan):
+        #geodict can have xdim/ydim OR ncols/nrows.  If given both, xdim/ydim will be used to re-calculate nrows/ncols
         isFileObj = False
         if not hasattr(shakefilename,'read'):
             shakefile = open(shakefilename,'r')
@@ -168,48 +177,18 @@ class ShakeGrid(MultiGrid):
             isFileObj = True
             shakefile = shakefilename
 
-
+        #fill in nrows/ncols or xdim/ydim, whichever is not specified.  xdim/ydim dictate if both pairs are specified.
+        samplegeodict = cls.fillGeoDict(samplegeodict)
         layers,geodict,eventDict,shakeDict,uncertaintyDict = readShakeFile(shakefile)
             
         if not isFileObj:
             shakefile.close()
 
-        #here we need to cut the data down if requested by the user, or expand it with padValue
-        if bounds is not None:
-            #the requested bounds
-            xmin,xmax,ymin,ymax = bounds 
-            #the actual bounds
-            gxmin,gxmax,gymin,gymax = (geodict['xmin'],geodict['xmax'],geodict['ymin'],geodict['ymax'])
-            xdim,ydim = (geodict['xdim'],geodict['ydim'])
-            nrows,ncols = (geodict['nrows'],geodict['ncols'])
-            if (xmin < gxmin or xmax > gxmax or ymin < gymin or ymax > gymax):
-                if padValue is None:
-                    raise DataSetException('Requesting bounds outside ShakeMap grid.')
-                padleftcols = int((gxmin - xmin)/xdim)
-                padrightcols = int((xmax - gxmax)/xdim)
-                padbottomrows = int((gymin - ymin)/ydim)
-                padtoprows = int((ymax - gymax)/ydim)
-                if padleftcols < 0:
-                    padleftcols = 0
-                else:
-                    geodict['xmin'] = xmin
-                if padrightcols < 0:
-                    padrightcols = 0
-                else:
-                    geodict['xmax'] = xmax
-                if padbottomrows < 0:
-                    padbottomrows = 0
-                else:
-                    geodict['ymin'] = ymin
-                if padtoprows < 0:
-                    padtoprows = 0
-                else:
-                    geodict['ymax'] = ymax
-                leftpad = np.ones((nrows,padleftcols))
-                rightpad = np.ones((nrows,padrightcols))
-                ncols += padrightcols + padleftcols
-                bottompad = np.ones((padbottomrows,ncols))
-                toppad = np.ones((padtoprows,ncols))
+        if samplegeodict is None:
+            pass #everything we need has already been retrieved
+        else:
+            if doPadding:
+                leftpad,rightpad,bottompad,toppad,geodict = _getPadding(geodict,bounds,padValue)
                 for layername,layerdata in layers.iteritems():
                     #pad left side
                     layerdata = np.hstack((leftpad,layerdata))
@@ -220,13 +199,13 @@ class ShakeGrid(MultiGrid):
                     #pad top
                     layerdata = np.vstack((toppad,layerdata))
                     grid = Grid2D(layerdata,geodict)
-                    gxmin,gxmax,gymin,gymax = (geodict['xmin'],geodict['xmax'],geodict['ymin'],geodict['ymax'])
-                    if gxmin != xmin or gxmax != xmax or gymin != ymin or gymax != ymax:
+                    if resample: #should I just do an interpolateToGrid() here?
                         grid.trim(bounds,resample=resample,method=method)
                     layers[layername] = grid.getData()
             else:
                 for layername,layerdata in layers.iteritems():
                     grid = Grid2D(layerdata,geodict)
+                    #should I do an interpolateToGrid() here too?
                     grid.trim(bounds,resample=resample,method=method)
                     layers[layername] = grid.getData()
                 geodict = grid.getGeoDict().copy()
@@ -234,10 +213,16 @@ class ShakeGrid(MultiGrid):
         return cls(layers,geodict,eventDict,shakeDict,uncertaintyDict)
     
     def save(self,filename,version=1):
+        isFile = False
+        if not hasattr(filename,'read'):
+            isFile = True
+            f = open(filename,'wt')
+        else:
+            f = filename    
         SCHEMA1 = 'http://www.w3.org/2001/XMLSchema-instance'
         SCHEMA2 = 'http://earthquake.usgs.gov/eqcenter/shakemap'
         SCHEMA3 = 'http://earthquake.usgs.gov http://earthquake.usgs.gov/eqcenter/shakemap/xml/schemas/shakemap.xsd'
-        f = open(filename,'wt')
+
         f.write('<?xml version="1.0" encoding="US-ASCII" standalone="yes"?>')
         fmt = '<shakemap_grid xmlns:xsi="%s" xmlns="%s" xsi:schemaLocation="%s" event_id="%s" shakemap_id="%s" shakemap_version="%i" code_version="%s" process_timestamp="%s" shakemap_originator="%s" map_status="%s" shakemap_event_type="%s">\n'
         tpl = (SCHEMA1,SCHEMA2,SCHEMA3,
@@ -247,7 +232,7 @@ class ShakeGrid(MultiGrid):
         f.write(fmt % tpl)
         fmt = '<event event_id="%s" magnitude="%.1f" depth="%.1f" lat="%.4f" lon="%.4f" event_timestamp="%s" event_network="%s" event_description="%s"/>\n'
         tpl = (self._eventDict['event_id'],self._eventDict['magnitude'],self._eventDict['depth'],
-               self._eventDict['lat'],self._eventDict['lon'],self._eventDict['event_timestamp'],
+               self._eventDict['lat'],self._eventDict['lon'],self._eventDict['event_timestamp'].strftime(TIMEFMT),
                self._eventDict['event_network'],self._eventDict['event_description'])
         f.write(fmt % tpl)
         fmt = '<grid_specification lon_min="%.4f" lat_min="%.4f" lon_max="%.4f" lat_max="%.4f" nominal_lon_spacing="%.4f" nominal_lat_spacing="%.4f" nlon="%i" nlat="%i"/>'
@@ -281,7 +266,8 @@ class ShakeGrid(MultiGrid):
             fidx += 1
         np.savetxt(f,data,delimiter=' ',fmt=data_formats)
         f.write('</grid_data>\n')
-        f.close()
+        if isFile:
+            f.close()
 
     def _checkType(self,key,dtype):
         if dtype == 'string' and (not isinstance(key,str) and not isinstance(key,unicode)):
@@ -327,14 +313,14 @@ def _trim_test(shakefile):
     grid.trim(newbounds)
 
 def _save_test():
-    pga = np.arange(0,16).reshape(4,4)
-    pgv = np.arange(1,17).reshape(4,4)
-    mmi = np.arange(2,18).reshape(4,4)
+    pga = np.arange(0,16,dtype=np.float32).reshape(4,4)
+    pgv = np.arange(1,17,dtype=np.float32).reshape(4,4)
+    mmi = np.arange(2,18,dtype=np.float32).reshape(4,4)
     geodict = {'xmin':0.5,'ymax':3.5,'ymin':0.5,'xmax':3.5,'xdim':1.0,'ydim':1.0}
     layers = OrderedDict()
     layers['pga'] = pga
     layers['pgv'] = pgv
-    layers['mmi'] = pga
+    layers['mmi'] = mmi
     shakeDict = {'event_id':'usabcd1234',
                  'shakemap_id':'usabcd1234',
                  'shakemap_version':1,
@@ -355,8 +341,31 @@ def _save_test():
                'pgv':(0.0,0),
                'mmi':(0.0,0)}
     shake = ShakeGrid(layers,geodict,eventDict,shakeDict,uncDict)
-    shake.save('foo.xml',version=3)
-                 
+    fobj = StringIO.StringIO()
+    shake.save(fobj,version=3)
+    filestr = fobj.getvalue()
+    fobj.seek(0)
+    shake2 = ShakeGrid.load(fobj)
+    fobj.seek(0)
+    print shake2.getLayer('pga').getData()
+    bigbounds = (-0.5,4.5,-0.5,4.5)
+    shake3 = ShakeGrid.load(fobj,bounds=bigbounds,resample=False,doPadding=False,padValue=np.nan)
+    print pga
+    print shake3.getLayer('pga').getData()
+    fobj.seek(0)
+    shake4 = ShakeGrid.load(fobj,bounds=bigbounds,resample=False,doPadding=True,padValue=np.nan)
+    print shake4.getLayer('pga').getData()
+    print shake4.getGeoDict()
+    fobj.seek(0)
+    littlebounds = (1.0,3.0,1.0,3.0)
+    shake5 = ShakeGrid.load(fobj,bounds=littlebounds,resample=True,doPadding=False,padValue=np.nan)
+    print shake5.getLayer('pga').getData()
+    print shake5.getGeoDict()
+    fobj.seek(0)
+    bigbounds2 = (-1.0,5.0,-1.0,5.0)
+    shake6 = ShakeGrid.load(fobj,bounds=bigbounds2,resample=True,doPadding=True,padValue=np.nan)
+    print shake6.getLayer('pga').getData()
+    print shake6.getGeoDict()
                  
                  
 if __name__ == '__main__':

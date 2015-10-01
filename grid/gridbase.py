@@ -12,6 +12,99 @@ class Grid(DataSet):
     assumed to be pixel-registered - that is, grid coordinates
     represent the value at the *center* of the cells.
     """
+    @abc.abstractmethod #should be a classmethod when instantiated
+    def getFileGeoDict(filename):
+        """
+        Abstract method to return the bounding box, resolution, and shape of a file in whatever Grid format.
+        :param filename:
+           The path to the filename of whatever grid format this is being implemented in.
+        :returns:
+          A geodict specifying the bounding box, resolution, and shape of the data in a file.
+        """
+        raise NotImplementedError
+
+    @classmethod
+    def _getPadding(cls,geodict,padbounds,padvalue):
+        xmin,xmax,ymin,ymax = padbounds
+        gxmin,gxmax,gymin,gymax = (geodict['xmin'],geodict['xmax'],geodict['ymin'],geodict['ymax'])
+        xdim = geodict['xdim']
+        ydim = geodict['ydim']
+        nrows,ncols = (geodict['nrows'],geodict['ncols'])
+        padleftcols = int((gxmin - xmin)/xdim)
+        padrightcols = int((xmax - gxmax)/xdim)
+        padbottomrows = int((gymin - ymin)/ydim)
+        padtoprows = int((ymax - gymax)/ydim)
+
+        padleftcols = np.ceil((gxmin - xmin)/xdim)
+        padrightcols = np.ceil((xmax - gxmax)/xdim)
+        padbottomrows = np.ceil((gymin - ymin)/ydim)
+        padtoprows = np.ceil((ymax - gymax)/ydim)
+
+        #if any of these are negative, set them to zero
+        if padleftcols < 0:
+            padleftcols = 0
+        if padrightcols < 0:
+            padrightcols = 0
+        if padbottomrows < 0:
+            padbottomrows = 0
+        if padtoprows < 0:
+            padtoprows = 0
+
+        leftpad = np.ones((nrows,padleftcols))*padvalue
+        rightpad = np.ones((nrows,padrightcols))*padvalue
+        ncols += padrightcols + padleftcols
+        bottompad = np.ones((padbottomrows,ncols))*padvalue
+        toppad = np.ones((padtoprows,ncols))*padvalue
+
+        #now figure out what the new bounds are
+        geodict['xmin'] = gxmin - padleftcols*xdim
+        geodict['xmax'] = gxmax + padrightcols*xdim
+        geodict['ymin'] = gymin - padbottomrows*ydim
+        geodict['ymax'] = gymax + padtoprows*ydim
+        geodict['ncols'] = geodict['ncols'] + leftpad.shape[1] + rightpad.shape[1]
+        geodict['nrows'] = geodict['nrows'] + bottompad.shape[0] + toppad.shape[0]
+        return (leftpad,rightpad,bottompad,toppad,geodict)
+    
+    @classmethod 
+    def checkGeoDict(cls,geodict):
+        reqfields = set(['xmin','xmax','ymin','ymax','xdim','ydim','nrows','ncols'])
+        if not reqfields.issubset(set(geodict.keys())):
+            return False
+        return True
+
+    @classmethod
+    def fillGeoDict(cls,geodict):
+        if geodict.has_key('xdim') and geodict.has_key('ydim'): #calculate rows/cols
+            geodict['ncols'] = len(np.arange(geodict['xmin'],geodict['xmax']+geodict['xdim'],geodict['xdim']))
+            geodict['nrows'] = len(np.arange(geodict['ymin'],geodict['ymax']+geodict['ydim'],geodict['ydim']))
+        else: #calculate xdim/ydim
+            geodict['xdim'] = (geodict['xmax']-geodict['xmin'])/geodict['ncols']
+            geodict['ydim'] = (geodict['ymax']-geodict['ymin'])/geodict['nrows']
+        return geodict
+    
+    
+    @abc.abstractmethod
+    def blockmean(self,geodict):
+        """
+        Abstract method to calculate average values for cells of larger size than the current grid.
+        :param geodict:
+          Geodict that defines the new coarser grid.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod #should be a classmethod when instantiated
+    def loadFromCloud(cls,cloud,geodict):
+        """
+        Create a grid from a Cloud instance (scattered XY data).
+        :param cloud:
+          A Cloud instance containing scattered XY data.
+        :param geodict:
+          A geodict object where nrows/ncols are optional (will be calculated from bounds/cell dimensions)
+        :returns:
+          An instance of a Grid object.
+        """
+    
+    
     @staticmethod
     def getLatLonMesh(geodict):
         lons = np.linspace(geodict['xmin'],geodict['xmax'],num=geodict['ncols'])

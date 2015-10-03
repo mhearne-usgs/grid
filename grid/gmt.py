@@ -13,53 +13,22 @@ from dataset import DataSetException
 import h5py
 
 #TODO:
-#1) Figure out how COARDS specifies pixel vs gridline registration (default seems to be gridline)
-#2) Write a test for 180 meridian crossing grids
+#1) Write a test for 180 meridian crossing grids
 
-def __createSections(bounds,geodict):
-    """Given a grid that goes from 0 to 180 degrees, figure out the two pixel regions that up both sides of the subset
-    :param bounds:
-       Tuple of (xmin,xmax,ymin,ymax)
-    :param geodict:
-       Geodict dictionary
-    :returns:
-      Two tuples of 4 elements each - (iulx,iuly,ilrx,ilry). The first tuple defines the pixel offsets for the left
-      side of the subsetted region, and the second tuple defines the pixel offsets for the right side.
-    """
-    (bxmin,bxmax,bymin,bymax) = bounds
-    ulx = geodict['xmin']
-    uly = geodict['ymax']
-    xdim = geodict['xdim']
-    ydim = geodict['ydim']
-    ncols = geodict['ncols']
-    nrows = geodict['nrows']
-    #section 1
-    iulx1 = int(np.floor((bxmin - ulx)/xdim))
-    iuly1 = int(np.ceil((uly - bymax)/ydim))
-    ilrx1 = int(ncols-1)
-    ilry1 = int(np.floor((uly - bymin)/ydim))
-    #section 2
-    iulx2 = 0
-    iuly2 = int(np.ceil((uly - bymax)/ydim))
-    ilrx2 = int(np.ceil((bxmax - ulx)/xdim))
-    ilry2 = int(np.floor((uly - bymin)/ydim))
-
-    region1 = (iulx1,iuly1,ilrx1,ilry1)
-    region2 = (iulx2,iuly2,ilrx2,ilry2)
-    return(region1,region2)
-
-def createSampleGrid(N):
+def createSampleGrid(M,N):
     """Used for internal testing - create an NxN grid with lower left corner at 0.5,0.5, xdim/ydim = 1.0
+    :param M:
+       Number of rows in output grid
     :param N:
-       Number of rows and columns in output grid
+       Number of columns in output grid
     :returns:
        GMTGrid object where data values are an NxN array of values from 0 to N-squared minus 1, and geodict
        lower left corner is at 0.5/0.5 and cell dimensions are 1.0.
     """
-    data = np.arange(0,np.power(N,2)).reshape(N,N)
+    data = np.arange(0,M*N).reshape(M,N)
     data = data.astype(np.int32) #arange gives int64 by default, not supported by netcdf3
     xvar = np.arange(0.5,0.5+N,1.0)
-    yvar = np.arange(0.5,0.5+N,1.0)
+    yvar = np.arange(0.5,0.5+M,1.0)
     geodict = {'nrows':N,
                'ncols':N,
                'xmin':0.5,
@@ -68,7 +37,7 @@ def createSampleGrid(N):
                'ymax':yvar[-1],
                'xdim':1.0,
                'ydim':1.0}
-    gmtgrid = GMTGrid(data,geodict)
+    gmtgrid = GDALGrid(data,geodict)
     return gmtgrid
 
 class GMTGrid(Grid2D):
@@ -165,6 +134,16 @@ class GMTGrid(Grid2D):
         geodict['xdim'] = struct.unpack('d',f.read(8))[0]
         geodict['ydim'] = struct.unpack('d',f.read(8))[0]
         f.close()
+
+        #We are going to represent all grids internally as grid-line registered
+        #The difference between pixel and gridline-registered grids is depicted well here:
+        #http://gmt.soest.hawaii.edu/doc/5.1.0/GMT_Docs.html#grid-registration-the-r-option
+        if offset == 1:
+            geodict['xmin'] += geodict['xdim']/2.0
+            geodict['xmax'] -= geodict['xdim']/2.0
+            geodict['ymin'] += geodict['ydim']/2.0
+            geodict['ymax'] -= geodict['ydim']/2.0
+            
         return geodict
 
             
@@ -234,6 +213,9 @@ class GMTGrid(Grid2D):
         cdf = netcdf.netcdf_file(filename)
         geodict = {}
         xvarname = None
+        registration = 'gridline'
+        if hasattr(cdf,'node_offset') and getattr(cdf,'node_offset') == 1:
+            registration = 'pixel'
         if 'x' in cdf.variables.keys():
             xvarname = 'x'
             yvarname = 'y'
@@ -266,6 +248,16 @@ class GMTGrid(Grid2D):
             geodict['ydim'] = yvar[1] - yvar[0]
         else:
             raise DataSetException('No support for CDF data file with variables: %s' % str(cdf.variables.keys()))
+
+        #We are going to represent all grids internally as grid-line registered
+        #The difference between pixel and gridline-registered grids is depicted well here:
+        #http://gmt.soest.hawaii.edu/doc/5.1.0/GMT_Docs.html#grid-registration-the-r-option
+        if registration == 'pixel':
+            geodict['xmin'] += geodict['xdim']/2.0
+            geodict['xmax'] -= geodict['xdim']/2.0
+            geodict['ymin'] += geodict['ydim']/2.0
+            geodict['ymax'] -= geodict['ydim']/2.0
+            
         return (geodict,xvar,yvar)
     
     @classmethod
@@ -289,33 +281,39 @@ class GMTGrid(Grid2D):
             xmax = min(geodict['xmax'],txmax)
             ymin = max(geodict['ymin'],tymin)
             ymax = min(geodict['ymax'],tymax)
+            #these are the bounds of the whole file
             gxmin = geodict['xmin']
             gxmax = geodict['xmax']
             gymin = geodict['ymin']
             gymax = geodict['ymax']
+            xdim = geodict['xdim']
+            ydim = geodict['ydim']
+            gnrows = geodict['nrows']
+            gncols = geodict['ncols']
             if xmin == gxmin and xmax == gxmax and ymin == gymin and ymax == gymax:
                 data = cdf.variables['z'].data.copy()
             else:
                 if xmin > xmax:
                     #cut user's request into two regions - one from the minimum to the
                     #meridian, then another from the meridian to the maximum.
-                    (region1,region2) = __createSections((xmin,xmax,ymin,ymax),geodict)
+                    (region1,region2) = cls._createSections((xmin,xmax,ymin,ymax),geodict)
                     (iulx1,iuly1,ilrx1,ilry1) = region1
                     (iulx2,iuly2,ilrx2,ilry2) = region2
-                    outcols1 = long(ilrx1-iulx1+1)
-                    outcols2 = long(ilrx2-iulx2+1)
+                    outcols1 = long(ilrx1-iulx1)
+                    outcols2 = long(ilrx2-iulx2)
                     outcols = long(outcols1+outcols2)
-                    outrows = long(ilry1-iuly1+1)
-                    cdfarray = BinCDFArray(cdf.variables['z'],len(yvar.data),len(xvar.data))
-                    section1 = cdfarray[iuly1:ilry1+1,iulx1:ilrx1+1]
-                    section2 = cdfarray[iuly2:ilry2+1,iulx2:ilrx2+1]
+                    outrows = long(ilry1-iuly1)
+                    #zvar = cdf.variables['z']
+                    section1 = cdf.variables['z'][iuly1:ilry1,iulx1:ilrx1].copy()
+                    section2 = cdf.variables['z'][iuly2:ilry2,iulx2:ilrx2].copy()
                     data = np.concatenate((section1,section2),axis=1)
-                    xmin = (ulx + iulx1*xdim)
-                    ymax = uly - iuly1*ydim
-                    xmax = ulx + ilrx2*xdim
-                    ymin = bymax - outrows*ydim
+                    outrows,outcols = data.shape
+                    xmin = (gxmin + iulx1*xdim)
+                    ymax = gymax - iuly1*ydim
+                    xmax = gxmin + (ilrx2-1)*xdim
+                    ymin = gymin + (gnrows-ilry1)*ydim
                     geodict['xmin'] = xmin
-                    geodict['xmax'] = xmax
+                    geodict['xmax'] = xmax + 360
                     geodict['ymin'] = ymin
                     geodict['ymax'] = ymax
                     geodict['nrows'],geodict['ncols'] = data.shape
@@ -330,7 +328,7 @@ class GMTGrid(Grid2D):
                     geodict['ymax'] = yvar[iymax].copy()
                     data = cdf.variables['z'][iymin:iymax+1,ixmin:ixmax+1].copy()
                     geodict['nrows'],geodict['ncols'] = data.shape
-
+        cdf.close()
         return (data,geodict)
 
     @classmethod
@@ -343,6 +341,9 @@ class GMTGrid(Grid2D):
         """
         geodict = {}
         f = h5py.File(hdffile,'r')
+        registration = 'gridline'
+        if f.attrs.has_key('node_offset') and f.attrs['node_offset'][0] == 1:
+            registration = 'pixel'
         if 'x' in f.keys():
             xvarname = 'x'
             yvarname = 'y'
@@ -372,6 +373,15 @@ class GMTGrid(Grid2D):
             yvar = np.linspace(geodict['ymin'],geodict['ymax'],num=nrows)
             geodict['xdim'] = xvar[1] - xvar[0]
             geodict['ydim'] = yvar[1] - yvar[0]
+
+        #We are going to represent all grids internally as grid-line registered
+        #The difference between pixel and gridline-registered grids is depicted well here:
+        #http://gmt.soest.hawaii.edu/doc/5.1.0/GMT_Docs.html#grid-registration-the-r-option
+        if registration == 'pixel':
+            geodict['xmin'] += geodict['xdim']/2.0
+            geodict['xmax'] -= geodict['xdim']/2.0
+            geodict['ymin'] += geodict['ydim']/2.0
+            geodict['ymax'] -= geodict['ydim']/2.0
         f.close()
         return (geodict,xvar,yvar)
         
@@ -498,6 +508,7 @@ class GMTGrid(Grid2D):
         samplebounds = None
         if samplegeodict is not None:
             bounds = (samplegeodict['xmin'],samplegeodict['xmax'],samplegeodict['ymin'],samplegeodict['ymax'])
+            samplebounds = bounds
             #if the user wants resampling, we can't just read the bounds they asked for, but instead
             #go outside those bounds.  if they asked for padding and the input bounds exceed the bounds
             #of the file, then we can pad.  If they *didn't* ask for padding and input exceeds, raise exception.
@@ -517,7 +528,7 @@ class GMTGrid(Grid2D):
                     if doPadding==False:
                         raise DataSetException('Cannot resample data given input bounds, unless doPadding is set to True.')
                     else:
-                        samplebounds = bounds #we'll just read what's in the file and pad later?
+                        samplebounds = rbounds #we'll just read what's in the file and pad later?
                 else:
                     samplebounds = rbounds
         
@@ -544,6 +555,8 @@ class GMTGrid(Grid2D):
         #it using the Grid2D super class
         if resample:
             grid = Grid2D(data,geodict)
+            if samplegeodict['xmin'] > samplegeodict['xmax']:
+                samplegeodict['xmax'] += 360
             grid.interpolateToGrid(samplegeodict,method=method)
             data = grid.getData()
             geodict = grid.getGeoDict()
@@ -683,7 +696,7 @@ def _subset_test():
     try:
         print
         print 'Test subsetting data:'
-        gmtgrid = createSampleGrid(4)
+        gmtgrid = createSampleGrid(4,4)
         gmtgrid.save('test.grd',format='netcdf')
         print gmtgrid
 
@@ -706,7 +719,7 @@ def _resample_test():
     try:
         print
         print 'Test subsetting data:'
-        gmtgrid = createSampleGrid(6)
+        gmtgrid = createSampleGrid(6,6)
         gmtgrid.save('test.grd',format='netcdf')
         print gmtgrid
         print gmtgrid._data
@@ -717,7 +730,7 @@ def _resample_test():
         # print gmtgrid3
         # print gmtgrid3._data
 
-        gmtgrid = createSampleGrid(4)
+        gmtgrid = createSampleGrid(4,4)
         gmtgrid.save('test.grd',format='netcdf')
         newdict = {'xmin':-1.0,'xmax':5.0,'ymin':-1.0,'ymax':5.0,'xdim':1.0,'ydim':1.0}
         newdict = Grid.fillGeoDict(newdict)
@@ -728,9 +741,36 @@ def _resample_test():
         pass
 
     os.remove('test.grd')
+
+def _meridian_test():
+    data = np.arange(0,36).astype(np.int32).reshape(4,9)
+    geodict = {'xmin':-180.0,'xmax':180.0,'ymin':0.0,'ymax':90.0,'xdim':45,'ydim':30,'nrows':4,'ncols':9}
+    gmtgrid = GMTGrid(data,geodict)
+    gmtgrid.save('test.grd')
+    # sampledict = {'xmin':135,'xmax':-135,'ymin':0.0,'ymax':60.0,'xdim':45.0,'ydim':30.0,'nrows':3,'ncols':4}
+    # gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=sampledict)
+    
+    # print gmtgrid._data
+    # print 
+    # print gmtgrid3._data
+
+    # sampledict = {'xmin':95,'xmax':-125,'ymin':0.0,'ymax':60.0,'xdim':45.0,'ydim':30.0,'nrows':3,'ncols':4}
+    # gmtgrid4 = GMTGrid.load('test.grd',samplegeodict=sampledict)
+    
+    # print gmtgrid._data
+    # print 
+    # print gmtgrid4._data
+
+    sampledict = {'xmin':95,'xmax':-125,'ymin':0.0,'ymax':60.0,'xdim':45.0,'ydim':30.0,'nrows':3,'ncols':4}
+    gmtgrid5 = GMTGrid.load('test.grd',samplegeodict=sampledict,resample=True,doPadding=True)
+    
+    print gmtgrid._data
+    print 
+    print gmtgrid5._data
     
 if __name__ == '__main__':
-    _save_test()
-    _pad_test()
-    _subset_test()
-    _resample_test()
+    # _save_test()
+    # _pad_test()
+    # _subset_test()
+    # _resample_test()
+    _meridian_test()

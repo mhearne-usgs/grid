@@ -86,6 +86,39 @@ class Grid2D(Grid):
     @abc.abstractmethod
     def save(self,filename): #would we ever want to save a subset of the data?
         raise NotImplementedError('Save method not implemented in base class')
+
+    @classmethod
+    def _createSections(self,bounds,geodict):
+        """Given a grid that goes from 0 to 180 degrees, figure out the two pixel regions that up both sides of the subset
+        :param bounds:
+           Tuple of (xmin,xmax,ymin,ymax)
+        :param geodict:
+           Geodict dictionary
+        :returns:
+          Two tuples of 4 elements each - (iulx,iuly,ilrx,ilry). The first tuple defines the pixel offsets for the left
+          side of the subsetted region, and the second tuple defines the pixel offsets for the right side.
+        """
+        (bxmin,bxmax,bymin,bymax) = bounds
+        ulx = geodict['xmin']
+        uly = geodict['ymax']
+        xdim = geodict['xdim']
+        ydim = geodict['ydim']
+        ncols = geodict['ncols']
+        nrows = geodict['nrows']
+        #section 1
+        iulx1 = int(np.floor((bxmin - ulx)/xdim))
+        iuly1 = int(np.ceil((uly - bymax)/ydim))
+        ilrx1 = int(ncols)
+        ilry1 = int(np.floor((uly - bymin)/ydim)) + 1
+        #section 2
+        iulx2 = 0
+        iuly2 = int(np.ceil((uly - bymax)/ydim))
+        ilrx2 = int(np.ceil((bxmax - ulx)/xdim)) + 1
+        ilry2 = int(np.floor((uly - bymin)/ydim)) + 1
+
+        region1 = (iulx1,iuly1,ilrx1,ilry1)
+        region2 = (iulx2,iuly2,ilrx2,ilry2)
+        return(region1,region2)
     
     def getData(self):
         """

@@ -37,7 +37,7 @@ def createSampleGrid(M,N):
                'ymax':yvar[-1],
                'xdim':1.0,
                'ydim':1.0}
-    gmtgrid = GDALGrid(data,geodict)
+    gmtgrid = GMTGrid(data,geodict)
     return gmtgrid
 
 class GMTGrid(Grid2D):
@@ -148,18 +148,36 @@ class GMTGrid(Grid2D):
 
             
     @classmethod
-    def readGMTNative(cls,fname,bounds=None):
+    def readGMTNative(cls,fname,bounds=None,firstColumnDuplicated=False,fmt=None):
         """Read the data and geo-referencing information from a GMT native grid file, subsetting if requested.
+        http://gmt.soest.hawaii.edu/doc/5.1.2/GMT_Docs.html#native-binary-grid-files
         :param fname:
           File name of GMT native grid
         :param bounds:
            Tuple of (xmin,xmax,ymin,ymax)
+        :param firstColumnDuplicated:
+           Boolean - is this a file where the last column of data is the same as the first (for grids that span entire globe).
+        :param fmt: 
+           Data width, one of: 
+             - 'i' (16 bit signed integer)
+             - 'l' (32 bit signed integer)
+             - 'f' (32 bit float)
+             - 'd' (64 bit float)
+          Strictly speaking, this is only necessary when the data file is 32 bit float or 32 bit integer, as there is
+          no *sure* way to tell from the header or data which data type is contained in the file.  If fmt is None, then
+          the code will try to guess as best it can from the data whether it is integer or floating point data. Caveat emptor!
         :returns:
           Tuple of data (2D numpy array of data, possibly subsetted from file) and geodict (see above).
         :raises NotImplementedError:
           For any bounds not None (we'll get to it eventually!)
         """
-        f = open(grdfile,'rb')
+        #Given that we can't automatically distinguish between 32 bit ints and 32 bit floats, we'll use
+        #this value as a cutoff for "detecting" when a value read from disk as a float has an "unreasonably" 
+        #high exponent value.  This is NOT guaranteed to work - use the fmt keyword if you want to be sure.
+        MAX_FLOAT_EXP = 30
+        fsize = os.path.getsize(fname)
+        datalen = fsize-892
+        f = open(fname,'rb')
         f.seek(0,0)
         geodict = {}
         geodict['ncols'] = struct.unpack('I',f.read(4))[0]
@@ -181,24 +199,53 @@ class GMTGrid(Grid2D):
         title = f.read(80).strip()
         command = f.read(320).strip()
         remark = f.read(160).strip()
-        #nota bene - the extent specified in a GMT grid is for the edges of the
-        #grid, regardless of whether you've specified grid or pixel
-        #registration.
-        #TODO  - test above assertion!
-        geodict['xmin'] = geodict['xmin'] + geodict['xdim']/2.0
-        geodict['xmax'] = geodict['xmax'] - geodict['xdim']/2.0
-        geodict['ymin'] = geodict['ymin'] + geodict['ydim']/2.0
-        geodict['ymax'] = geodict['ymax'] - geodict['ydim']/2.0
+        #We are going to represent all grids internally as grid-line registered
+        #The difference between pixel and gridline-registered grids is depicted well here:
+        #http://gmt.soest.hawaii.edu/doc/5.1.0/GMT_Docs.html#grid-registration-the-r-option
+        npixels = geodict['nrows']*geodict['ncols']
+        lenshort = npixels*2
+        lenfloat = npixels*4
+        lendouble = npixels*8
+        if fmt is None:
+            if datalen == lenshort:
+                fmt = 'h'
+            if datalen == lendouble:
+                fmt = 'd'
+            if datalen == lenfloat: #let's try to guess whether this is float or int
+                fpos = f.tell()
+                #read 1 byte, check to see if it's nan or 0 - if it is, then we definitely have a float
+                dbytes = struct.unpack('f',f.read(4))[0]
+                while dbytes == 0.0:
+                    dbytes = struct.unpack('f',f.read(4))[0]
+                f.seek(fpos) #go back to where we were
+                if np.isnan(dbytes):
+                    fmt = 'f'
+                elif int(np.abs(np.log10(dbytes))) > MAX_FLOAT_EXP: #does this have a crazy large exponent?
+                    fmt = 'i'
+                else:
+                    fmt = 'f'
+        if offset == 1:
+            geodict['xmin'] += geodict['xdim']/2.0
+            geodict['xmax'] -= geodict['xdim']/2.0
+            geodict['ymin'] += geodict['ydim']/2.0
+            geodict['ymax'] -= geodict['ydim']/2.0
         if bounds is None:
             sfmt = '%i%s' % (geodict['ncols']*geodict['nrows'],fmt)
-            dwidths = {'i':2,'l':4,'f':4,'d':8}
+            dwidths = {'h':2,'i':4,'f':4,'d':8}
             dwidth = dwidths[fmt]
             dbytes = f.read(geodict['ncols']*geodict['nrows']*dwidth)
-            data = struct.unpack(sfmt,dbytes)
-            data = np.array(data).reshape(geodict['nrows'],-1)
-            data = (data * zscale) + zoffset
+            data = np.array(struct.unpack(sfmt,dbytes))
+            #data = np.array(data).reshape(geodict['nrows'],-1)
+            data.shape = (geodict['nrows'],geodict['ncols'])
+            if zscale != 1.0 or offset != 0.0:
+                data = (data * zscale) + zoffset
+            if firstColumnDuplicated:
+                data = data[:,0:-1]
+                geodict['xmax'] -= geodict['xdim']
         else:
+            #make sure to handle wrap-around data where first column is duplicated
             raise NotImplementedError('Reading of subset of GMT "native" format not yet supported')
+        
         f.close()
         return (data,geodict)
 
@@ -261,7 +308,7 @@ class GMTGrid(Grid2D):
         return (geodict,xvar,yvar)
     
     @classmethod
-    def readNetCDF(cls,filename,bounds=None):
+    def readNetCDF(cls,filename,bounds=None,firstColumnDuplicated=False):
         """Read the data and geo-referencing information from a GMT NetCDF3 grid file, subsetting if requested.
         :param filename:
           File name of GMT NetCDF3 grid
@@ -274,6 +321,9 @@ class GMTGrid(Grid2D):
         cdf = netcdf.netcdf_file(filename)
         if bounds is None:
             data = cdf.variables['z'].data.copy()
+            if firstColumnDuplicated:
+                data = data[:,0:-1]
+                geodict['xmax'] -= geodict['xdim']
         else:
             txmin,txmax,tymin,tymax = bounds
             #we're not doing anything fancy with the data here, just cutting out what we need
@@ -292,11 +342,14 @@ class GMTGrid(Grid2D):
             gncols = geodict['ncols']
             if xmin == gxmin and xmax == gxmax and ymin == gymin and ymax == gymax:
                 data = cdf.variables['z'].data.copy()
+                if firstColumnDuplicated:
+                    data = data[:,0:-1]
+                    geodict['xmax'] -= geodict['xdim']
             else:
                 if xmin > xmax:
                     #cut user's request into two regions - one from the minimum to the
                     #meridian, then another from the meridian to the maximum.
-                    (region1,region2) = cls._createSections((xmin,xmax,ymin,ymax),geodict)
+                    (region1,region2) = cls._createSections((xmin,xmax,ymin,ymax),geodict,firstColumnDuplicated)
                     (iulx1,iuly1,ilrx1,ilry1) = region1
                     (iulx2,iuly2,ilrx2,ilry2) = region2
                     outcols1 = long(ilrx1-iulx1)
@@ -322,6 +375,8 @@ class GMTGrid(Grid2D):
                     ixmax = np.abs(xvar-xmax).argmin()
                     iymin = np.abs(yvar-ymin).argmin()
                     iymax = np.abs(yvar-ymax).argmin()
+                    if firstColumnDuplicated:
+                        ixmax -= 1
                     geodict['xmin'] = xvar[ixmin].copy()
                     geodict['xmax'] = xvar[ixmax].copy()
                     geodict['ymin'] = yvar[iymin].copy()
@@ -342,7 +397,7 @@ class GMTGrid(Grid2D):
         geodict = {}
         f = h5py.File(hdffile,'r')
         registration = 'gridline'
-        if f.attrs.has_key('node_offset') and f.attrs['node_offset'][0] == 1:
+        if f.get('node_offset') is not None and f.attrs['node_offset'][0] == 1:
             registration = 'pixel'
         if 'x' in f.keys():
             xvarname = 'x'
@@ -386,7 +441,7 @@ class GMTGrid(Grid2D):
         return (geodict,xvar,yvar)
         
     @classmethod
-    def readHDF(cls,hdffile,bounds=None):
+    def readHDF(cls,hdffile,bounds=None,firstColumnDuplicated=False):
         """Read the data and geo-referencing information from a GMT NetCDF4 (HDF) grid file, subsetting if requested.
         :param hdffile:
           File name of GMT NetCDF4 grid
@@ -398,8 +453,12 @@ class GMTGrid(Grid2D):
         #need a reproducible way of creating netcdf file in HDF format
         geodict,xvar,yvar = cls.getHDFHeader(hdffile)
         f = h5py.File(hdffile,'r')
+        zvar = f['z']
         if bounds is None:
             data = zvar[:]
+            if firstColumnDuplicated:
+                data = data[:,0:-1]
+                geodict['xmax'] -= geodict['xdim']
         else:
             txmin,txmax,tymin,tymax = bounds
             #we're not doing anything fancy with the data here, just cutting out what we need
@@ -413,9 +472,12 @@ class GMTGrid(Grid2D):
             gymax = geodict['ymax']
             if xmin == gxmin and xmax == gxmax and ymin == gymin and ymax == gymax:
                 data = f['z'][:]
+                if firstColumnDuplicated:
+                    data = data[:,0:-1]
+                    geodict['xmax'] -= geodict['xdim']
             else:
                 if xmin > xmax:
-                    (region1,region2) = __createSections((xmin,xmax,ymin,ymax),geodict)
+                    (region1,region2) = __createSections((xmin,xmax,ymin,ymax),geodict,firstColumnDuplicated)
                     (iulx1,iuly1,ilrx1,ilry1) = region1
                     (iulx2,iuly2,ilrx2,ilry2) = region2
                     outcols1 = long(ilrx1-iulx1+1)
@@ -439,6 +501,8 @@ class GMTGrid(Grid2D):
                     ixmax = np.abs(xvar-xmax).argmin()
                     iymin = np.abs(yvar-ymin).argmin()
                     iymax = np.abs(yvar-ymax).argmin()
+                    if firstColumnDuplicated:
+                        ixmax -= 1
                     geodict['xmin'] = xvar[ixmin].copy()
                     geodict['xmax'] = xvar[ixmax].copy()
                     geodict['ymin'] = yvar[iymin].copy()
@@ -453,12 +517,12 @@ class GMTGrid(Grid2D):
         :param filename:
           Name of desired output file.
         :param format:
-          One of 'netcdf','hdf' (binary not yet supported).
+          One of 'netcdf','hdf' or 'binary'.
         :raises DataSetException:
-          When format not one of ('netcdf,'hdf')
+          When format not one of ('netcdf,'hdf','binary')
         """
-        if format not in ['netcdf','hdf']:
-            raise DataSetException('Only NetCDF3 and HDF (NetCDF4) output supported at this time.')
+        if format not in ['netcdf','hdf','binary']:
+            raise DataSetException('Only NetCDF3, HDF (NetCDF4), and GMT native output are supported.')
         if format == 'netcdf':
             f = netcdf.NetCDFFile(filename,'w')
             m,n = self._data.shape
@@ -479,6 +543,35 @@ class GMTGrid(Grid2D):
             y = f.create_dataset('y',data=yvar)
             z = f.create_dataset('z',data=self._data)
             f.close()
+        elif format == 'binary':
+            f = open(filename,'w')
+            f.write(struct.pack('I',self._geodict['ncols']))
+            f.write(struct.pack('I',self._geodict['nrows']))
+            f.write(struct.pack('I',0)) #gridline registration
+            f.write(struct.pack('d',self._geodict['xmin']))
+            f.write(struct.pack('d',self._geodict['xmax']))
+            f.write(struct.pack('d',self._geodict['ymin']))
+            f.write(struct.pack('d',self._geodict['ymax']))
+            f.write(struct.pack('d',self._data.min()))
+            f.write(struct.pack('d',self._data.max()))
+            f.write(struct.pack('d',self._geodict['xdim']))
+            f.write(struct.pack('d',self._geodict['ydim']))
+            f.write(struct.pack('d',1.0)) #scale factor to multiply data by
+            f.write(struct.pack('d',0.0)) #offfset to add to data
+            f.write(struct.pack('80s','X units (probably degrees)'))
+            f.write(struct.pack('80s','Y units (probably degrees)'))
+            f.write(struct.pack('80s','Z units unknown'))
+            f.write(struct.pack('80s','')) #title
+            f.write(struct.pack('320s','Created with GMTGrid() class, a product of the NEIC.')) #command
+            f.write(struct.pack('160s','')) #remark
+            if self._data.dtype not in [np.int16,np.int32,np.float32,np.float64]:
+                raise DataSetException('Data type of "%s" is not supported by the GMT native format.' % str(self._data.dtype))
+            fpos1 = f.tell()
+            self._data.tofile(f)
+            fpos2 = f.tell()
+            bytesout = fpos2 - fpos1
+            f.close()
+            
     
     @classmethod
     def load(cls,gmtfilename,samplegeodict=None,resample=False,method='linear',doPadding=False,padValue=np.nan):
@@ -506,6 +599,7 @@ class GMTGrid(Grid2D):
         geodict = None
         bounds = None
         samplebounds = None
+        firstColumnDuplicated = False
         if samplegeodict is not None:
             bounds = (samplegeodict['xmin'],samplegeodict['xmax'],samplegeodict['ymin'],samplegeodict['ymax'])
             samplebounds = bounds
@@ -518,27 +612,36 @@ class GMTGrid(Grid2D):
                 xdim = filegeodict['xdim']
                 ydim = filegeodict['ydim']
                 fbounds = (filegeodict['xmin'],filegeodict['xmax'],filegeodict['ymin'],filegeodict['ymax'])
+                hasMeridianWrap = False
+                if fbounds[0] == fbounds[1]-360:
+                    firstColumnDuplicated = True
+                if firstColumnDuplicated or np.abs(fbounds[0]-(fbounds[1]-360)) == xdim:
+                    hasMeridianWrap = True
                 isOutside = False
-                #make a bounding box that is one row/col greater than what the user asked for
-                rbounds = (bounds[0]-xdim*PADFACTOR,bounds[1]+xdim*PADFACTOR,bounds[2]-ydim*PADFACTOR,bounds[3]+ydim*PADFACTOR)
+                #make a bounding box that is PADFACTOR number of rows/cols greater than what the user asked for
+                rbounds = [bounds[0]-xdim*PADFACTOR,bounds[1]+xdim*PADFACTOR,bounds[2]-ydim*PADFACTOR,bounds[3]+ydim*PADFACTOR]
                 #compare that bounding box to the file bounding box
-                if fbounds[0] > rbounds[0] or fbounds[1] < rbounds[1] or fbounds[2] > rbounds[2] or fbounds[3] < rbounds[3]:
-                    isOutside = True
+                if not hasMeridianWrap:
+                    if fbounds[0] > rbounds[0] or fbounds[1] < rbounds[1] or fbounds[2] > rbounds[2] or fbounds[3] < rbounds[3]:
+                        isOutside = True
+                else:
+                    if fbounds[2] > rbounds[2] or fbounds[3] < rbounds[3]:
+                        isOutside = True
                 if isOutside:
                     if doPadding==False:
                         raise DataSetException('Cannot resample data given input bounds, unless doPadding is set to True.')
                     else:
-                        samplebounds = rbounds #we'll just read what's in the file and pad later?
+                        samplebounds = rbounds
                 else:
                     samplebounds = rbounds
         
         if ftype == 'binary':
             #we're dealing with a binary "native" GMT grid file
-            data,geodict = cls.readGMTNative(gmtfilename,samplebounds)
+            data,geodict = cls.readGMTNative(gmtfilename,samplebounds,firstColumnDuplicated)
         elif ftype == 'netcdf':
-            data,geodict = cls.readNetCDF(gmtfilename,samplebounds)
+            data,geodict = cls.readNetCDF(gmtfilename,samplebounds,firstColumnDuplicated)
         elif ftype == 'hdf':
-            data,geodict = cls.readHDF(gmtfilename,samplebounds)
+            data,geodict = cls.readHDF(gmtfilename,samplebounds,firstColumnDuplicated)
         else:
             raise DataSetException('File type "%s" cannot be read.' % ftype)
         
@@ -633,144 +736,146 @@ class BinCDFArray(object):
 
 def _save_test():
     try:
-        print
-        print 'Testing saving and loading from different formats:'
+        print 'Testing saving and loading to/from NetCDF3...'
         #make a sample data set
-        data = np.arange(0,16).reshape(4,4)
-        data = data.astype(np.int32) #arange gives int64 by default, not supported by netcdf3
-        m,n = data.shape
-        geodict = {'nrows':m,
-                   'ncols':n,
-                   'xmin':0.5,
-                   'xmax':3.5,
-                   'ymin':0.5,
-                   'ymax':3.5,
-                   'xdim':1.0,
-                   'ydim':1.0}
-        gmtgrid = GMTGrid(data,geodict)
-        print gmtgrid
+        gmtgrid = createSampleGrid(4,4)
 
         #save it as netcdf3
         gmtgrid.save('test.grd',format='netcdf')
         gmtgrid2 = GMTGrid.load('test.grd')
-        print
-        print gmtgrid2
+        np.testing.assert_almost_equal(gmtgrid._data,gmtgrid2._data)
+        print 'Passed saving and loading to/from NetCDF3.'
 
+        print 'Testing saving and loading to/from NetCDF4 (HDF)...'
         #save it as HDF
         gmtgrid.save('test.grd',format='hdf')
-        gmtgrid2 = GMTGrid.load('test.grd')
-        print
-        print gmtgrid2
-    except:
-        pass
+        gmtgrid3 = GMTGrid.load('test.grd')
+        np.testing.assert_almost_equal(gmtgrid._data,gmtgrid3._data)
+        print 'Passed saving and loading to/from NetCDF4 (HDF)...'
+
+        print 'Testing saving and loading to/from NetCDF4 (HDF)...'
+        gmtgrid.save('test.grd',format='binary')
+        gmtgrid4 = GMTGrid.load('test.grd')
+        np.testing.assert_almost_equal(gmtgrid._data,gmtgrid4._data)
+        print 'Passed saving and loading to/from GMT native...'
+    except AssertionError,error:
+        print 'Failed padding test:\n %s' % error
     os.remove('test.grd')
 
 def _pad_test():
     try:
-        print
-        print 'Test padding data with null values:'
-        data = np.arange(0,16).reshape(4,4)
-        data = data.astype(np.int32) #arange gives int64 by default, not supported by netcdf3
-        m,n = data.shape
-        geodict = {'nrows':m,
-                   'ncols':n,
-                   'xmin':0.5,
-                   'xmax':3.5,
-                   'ymin':0.5,
-                   'ymax':3.5,
-                   'xdim':1.0,
-                   'ydim':1.0}
-        gmtgrid = GMTGrid(data,geodict)
+        print 'Test padding data with null values...'
+        gmtgrid = createSampleGrid(4,4)
         gmtgrid.save('test.grd',format='netcdf')
-        print gmtgrid
 
         newdict = {'xmin':-0.5,'xmax':4.5,'ymin':-0.5,'ymax':4.5,'xdim':1.0,'ydim':1.0}
         gmtgrid2 = GMTGrid.load('test.grd',samplegeodict=newdict,doPadding=True)
-        print gmtgrid2
-        print gmtgrid2._data
-    except:
-        pass
+        output = np.array([[np.nan,np.nan,np.nan,np.nan,np.nan,np.nan],
+                           [np.nan,0.0,1.0,2.0,3.0,np.nan],
+                           [np.nan,4.0,5.0,6.0,7.0,np.nan],
+                           [np.nan,8.0,9.0,10.0,11.0,np.nan],
+                           [np.nan,12.0,13.0,14.0,15.0,np.nan],
+                           [np.nan,np.nan,np.nan,np.nan,np.nan,np.nan]])
+        np.testing.assert_almost_equal(gmtgrid2._data,output)
+        print 'Passed padding data.'
+    except AssertionError,error:
+        print 'Failed padding test:\n %s' % error
     os.remove('test.grd')
 
 def _subset_test():
     try:
-        print
-        print 'Test subsetting data:'
+        print 'Test subsetting data without padding...'
         gmtgrid = createSampleGrid(4,4)
         gmtgrid.save('test.grd',format='netcdf')
-        print gmtgrid
 
         newdict = {'xmin':1.5,'xmax':2.5,'ymin':1.5,'ymax':2.5,'xdim':1.0,'ydim':1.0}
         gmtgrid2 = GMTGrid.load('test.grd',samplegeodict=newdict)
-        print gmtgrid2
-        print gmtgrid2._data
+        output = np.array([[5,6],
+                           [9,10]])
+        np.testing.assert_almost_equal(gmtgrid2._data,output)
+        print 'Passed subsetting data without padding.'
 
-        gmtgrid.save('test.grd',format='hdf')
-        print gmtgrid
-        gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=newdict)
-        print gmtgrid3
-        print gmtgrid3._data
-    except:
-        pass
+        # gmtgrid.save('test.grd',format='hdf')
+        # print gmtgrid
+        # gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=newdict)
+        # print gmtgrid3
+        # print gmtgrid3._data
+    except AssertionError,error:
+        print 'Failed resample test:\n %s' % error
 
     os.remove('test.grd')
 
 def _resample_test():
     try:
-        print
-        print 'Test subsetting data:'
-        gmtgrid = createSampleGrid(6,6)
+        print 'Test resampling data without padding...'
+        gmtgrid = createSampleGrid(7,7)
         gmtgrid.save('test.grd',format='netcdf')
-        print gmtgrid
-        print gmtgrid._data
 
-        # newdict = {'xmin':2.0,'xmax':4.0,'ymin':2.0,'ymax':4.0,'xdim':1.0,'ydim':1.0}
-        # newdict = Grid.fillGeoDict(newdict)
-        # gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=newdict,resample=True)
-        # print gmtgrid3
-        # print gmtgrid3._data
+        newdict = {'xmin':3.0,'xmax':4.0,'ymin':3.0,'ymax':4.0,'xdim':1.0,'ydim':1.0}
+        newdict = Grid.fillGeoDict(newdict)
+        gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=newdict,resample=True)
+        output = np.array([[20,21],
+                           [27,28]])
+        np.testing.assert_almost_equal(gmtgrid3._data,output)
+        print 'Passed resampling without padding.'
 
+        print 'Test resampling data with padding...'
         gmtgrid = createSampleGrid(4,4)
         gmtgrid.save('test.grd',format='netcdf')
-        newdict = {'xmin':-1.0,'xmax':5.0,'ymin':-1.0,'ymax':5.0,'xdim':1.0,'ydim':1.0}
+        newdict = {'xmin':0.0,'xmax':4.0,'ymin':0.0,'ymax':4.0,'xdim':1.0,'ydim':1.0}
         newdict = Grid.fillGeoDict(newdict)
         gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=newdict,resample=True,doPadding=True)
-        print gmtgrid3
-        print gmtgrid3._data
-    except:
-        pass
+        output = np.array([[np.nan,np.nan,np.nan,np.nan,np.nan],
+                           [np.nan,2.5,3.5,4.5,np.nan],
+                           [np.nan,6.5,7.5,8.5,np.nan],
+                           [np.nan,10.5,11.5,12.5,np.nan],
+                           [np.nan,np.nan,np.nan,np.nan,np.nan]])
+        np.testing.assert_almost_equal(gmtgrid3._data,output)
+        print 'Passed resampling without padding.'
+    except AssertionError,error:
+        print 'Failed resample test:\n %s' % error
 
     os.remove('test.grd')
 
 def _meridian_test():
-    data = np.arange(0,36).astype(np.int32).reshape(4,9)
-    geodict = {'xmin':-180.0,'xmax':180.0,'ymin':0.0,'ymax':90.0,'xdim':45,'ydim':30,'nrows':4,'ncols':9}
-    gmtgrid = GMTGrid(data,geodict)
-    gmtgrid.save('test.grd')
-    # sampledict = {'xmin':135,'xmax':-135,'ymin':0.0,'ymax':60.0,'xdim':45.0,'ydim':30.0,'nrows':3,'ncols':4}
-    # gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=sampledict)
-    
-    # print gmtgrid._data
-    # print 
-    # print gmtgrid3._data
+    try:
+        print 'Testing resampling of global grid where sample crosses 180/-180 meridian...'
+        data = np.arange(0,84).astype(np.int32).reshape(7,12)
+        geodict = {'xmin':-180.0,'xmax':150.0,'ymin':-90.0,'ymax':90.0,'xdim':30,'ydim':30,'nrows':7,'ncols':12}
+        gmtgrid = GMTGrid(data,geodict)
+        gmtgrid.save('test.grd')
 
-    # sampledict = {'xmin':95,'xmax':-125,'ymin':0.0,'ymax':60.0,'xdim':45.0,'ydim':30.0,'nrows':3,'ncols':4}
-    # gmtgrid4 = GMTGrid.load('test.grd',samplegeodict=sampledict)
-    
-    # print gmtgrid._data
-    # print 
-    # print gmtgrid4._data
+        sampledict = {'xmin':105,'xmax':-105,'ymin':-15.0,'ymax':15.0,'xdim':30.0,'ydim':30.0,'nrows':2,'ncols':5}
+        gmtgrid5 = GMTGrid.load('test.grd',samplegeodict=sampledict,resample=True,doPadding=True)
 
-    sampledict = {'xmin':95,'xmax':-125,'ymin':0.0,'ymax':60.0,'xdim':45.0,'ydim':30.0,'nrows':3,'ncols':4}
-    gmtgrid5 = GMTGrid.load('test.grd',samplegeodict=sampledict,resample=True,doPadding=True)
-    
-    print gmtgrid._data
-    print 
-    print gmtgrid5._data
-    
+        output = np.array([[ 39.5,40.5,35.5,30.5,31.5,32.5],
+                           [ 51.5,52.5,47.5,42.5,43.5,44.5]])
+        #output = np.random.rand(2,6) #this will fail assertion test
+        np.testing.assert_almost_equal(gmtgrid5._data,output)
+        print 'Done testing resampling of global grid where sample crosses 180/-180 meridian.'
+
+        print 'Testing resampling of global grid where sample crosses 180/-180 meridian and first column is duplicated by last...'
+        data = np.arange(0,84).astype(np.int32).reshape(7,12)
+        data = np.hstack((data,data[:,0].reshape(7,1)))
+        geodict = {'xmin':-180.0,'xmax':180.0,'ymin':-90.0,'ymax':90.0,'xdim':30,'ydim':30,'nrows':7,'ncols':13}
+        gmtgrid = GMTGrid(data,geodict)
+        gmtgrid.save('test.grd')
+
+        sampledict = {'xmin':105,'xmax':-105,'ymin':-15.0,'ymax':15.0,'xdim':30.0,'ydim':30.0,'nrows':2,'ncols':5}
+        gmtgrid5 = GMTGrid.load('test.grd',samplegeodict=sampledict,resample=True,doPadding=True)
+
+        output = np.array([[ 39.5,40.5,35.5,30.5,31.5,32.5],
+                           [ 51.5,52.5,47.5,42.5,43.5,44.5]])
+        #output = np.random.rand(2,6) #this will fail assertion test
+        np.testing.assert_almost_equal(gmtgrid5._data,output)
+        print 'Done testing resampling of global grid where sample crosses 180/-180 meridian and first column is duplicated by last...'
+        
+    except AssertionError,error:
+        print 'Failed meridian test:\n %s' % error
+    os.remove('test.grd')
 if __name__ == '__main__':
-    # _save_test()
-    # _pad_test()
-    # _subset_test()
-    # _resample_test()
+    _save_test()
+    _pad_test()
+    _subset_test()
+    _resample_test()
     _meridian_test()

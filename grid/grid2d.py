@@ -88,7 +88,7 @@ class Grid2D(Grid):
         raise NotImplementedError('Save method not implemented in base class')
 
     @classmethod
-    def _createSections(self,bounds,geodict):
+    def _createSections(self,bounds,geodict,firstColumnDuplicated):
         """Given a grid that goes from 0 to 180 degrees, figure out the two pixel regions that up both sides of the subset
         :param bounds:
            Tuple of (xmin,xmax,ymin,ymax)
@@ -115,6 +115,9 @@ class Grid2D(Grid):
         iuly2 = int(np.ceil((uly - bymax)/ydim))
         ilrx2 = int(np.ceil((bxmax - ulx)/xdim)) + 1
         ilry2 = int(np.floor((uly - bymin)/ydim)) + 1
+
+        if firstColumnDuplicated:
+            ilrx1 -= 1
 
         region1 = (iulx1,iuly1,ilrx1,ilry1)
         region2 = (iulx2,iuly2,ilrx2,ilry2)

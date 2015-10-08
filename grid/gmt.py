@@ -100,7 +100,7 @@ class GMTGrid(Grid2D):
         """
         ftype = cls.getFileType(filename)
         if ftype == 'native':
-            geodict,xvar,yvar = cls.getNativeHeader(filename)
+            geodict,xvar,yvar,fmt,zscale,zoffset = cls.getNativeHeader(filename)
         elif ftype == 'netcdf':
             geodict,xvar,yvar = cls.getNetCDFHeader(filename)
         elif ftype == 'hdf':
@@ -110,14 +110,28 @@ class GMTGrid(Grid2D):
         return geodict
             
     @classmethod
-    def getNativeHeader(cls,fname):
+    def getNativeHeader(cls,fname,fmt=None):
         """Get the header information from a GMT native grid file.
         :param fname:
            File name of GMT native grid
+        :param fmt:
+          One of:
+            - 'h' for 16 bit signed integer
+            - 'i' for 32 bit signed integer
+            - 'f' for 32 bit float
+            - 'd' for 64 bit float
         :returns:
-          GeoDict specifying spatial extent, resolution, and shape of grid inside NetCDF file.
+           - GeoDict specifying spatial extent, resolution, and shape of grid inside NetCDF file.
+           - xvar array specifying X coordinates of data columns
+           - xvar array specifying Y coordinates of data rows
+           - fmt If input fmt is None, this will be a best guess as to the data format in the file.
+           - zscale Data multiplier
+           - zoffset Value to be added to data
         """
         f = open(fname,'rb')
+        #Given that we can't automatically distinguish between 32 bit ints and 32 bit floats, we'll use
+        #this value as a cutoff for "detecting" when a value read from disk as a float has an "unreasonably" 
+        #high exponent value.  This is NOT guaranteed to work - use the fmt keyword if you want to be sure.
         MAX_FLOAT_EXP = 30
         fsize = os.path.getsize(fname)
         datalen = fsize-892
@@ -176,8 +190,7 @@ class GMTGrid(Grid2D):
             geodict['ymax'] -= geodict['ydim']/2.0
         xvar = np.arange(geodict['xmin'],geodict['xmax']+geodict['xdim'])
         yvar = np.arange(geodict['ymin'],geodict['ymax']+geodict['ydim'])
-        pass
-        return (geodict,xvar,yvar,fmt)
+        return (geodict,xvar,yvar,fmt,zscale,zoffset)
 
             
     @classmethod
@@ -204,21 +217,21 @@ class GMTGrid(Grid2D):
         :raises NotImplementedError:
           For any bounds not None (we'll get to it eventually!)
         """
-        #Given that we can't automatically distinguish between 32 bit ints and 32 bit floats, we'll use
-        #this value as a cutoff for "detecting" when a value read from disk as a float has an "unreasonably" 
-        #high exponent value.  This is NOT guaranteed to work - use the fmt keyword if you want to be sure.
-        geodict,xvar,yvar,fmt = cls.getNativeHeader(fname)
+        HDRLEN = 892
+        geodict,xvar,yvar,fmt,zscale,zoffset = cls.getNativeHeader(fname,fmt)
         #for right now we're reading everything in then subsetting that.  Fix later with something
         #clever like memory mapping...
         sfmt = '%i%s' % (geodict['ncols']*geodict['nrows'],fmt)
         dwidths = {'h':2,'i':4,'f':4,'d':8}
         dwidth = dwidths[fmt]
+        f = open(fname,'rb')
+        f.seek(HDRLEN)
         dbytes = f.read(geodict['ncols']*geodict['nrows']*dwidth)
         if bounds is None:
             data = np.flipud(np.array(struct.unpack(sfmt,dbytes)))
             #data = np.array(data).reshape(geodict['nrows'],-1)
             data.shape = (geodict['nrows'],geodict['ncols'])
-            if zscale != 1.0 or offset != 0.0:
+            if zscale != 1.0 or zoffset != 0.0:
                 data = (data * zscale) + zoffset
             if firstColumnDuplicated:
                 data = data[:,0:-1]
@@ -227,54 +240,12 @@ class GMTGrid(Grid2D):
             data = np.array(struct.unpack(sfmt,dbytes))
             data.shape = (geodict['nrows'],geodict['ncols'])
             data = np.fliplr(data)
-            if zscale != 1.0 or offset != 0.0:
+            if zscale != 1.0 or zoffset != 0.0:
                 data = (data * zscale) + zoffset
             if firstColumnDuplicated:
                 data = data[:,0:-1]
                 geodict['xmax'] -= geodict['xdim']
-            txmin,txmax,tymin,tymax = bounds
-            #we're not doing anything fancy with the data here, just cutting out what we need
-            xmin = max(geodict['xmin'],txmin)
-            xmax = min(geodict['xmax'],txmax)
-            ymin = max(geodict['ymin'],tymin)
-            ymax = min(geodict['ymax'],tymax)
-            if xmin < xmax:
-                #get the highest index of a positive difference btw xmin and xvar
-                #use that as an index to get the xmin on a grid cell
-                ixmin = np.where((xmin-xvar) >= 0)[0].max()
-                ixmax = np.where((xmax-xvar) <= 0)[0].min()
-                iymin = np.where((ymin-yvar) >= 0)[0].max()
-                iymax = np.where((ymax-yvar) <= 0)[0].min()
-                data = np.flipud(data[iymin:iymax+1,ixmin:ixmax+1])
-                m,n = data.shape
-                newxmin = geodict['xmin'] + ixmin * geodict['xdim']
-                newxmax = geodict['xmin'] + ixmax * geodict['xdim']
-                newymin = geodict['ymin'] + iymin * geodict['ydim']
-                newymax = geodict['ymin'] + iymax * geodict['ydim']
-                geodict['xmin'] = newxmin
-                geodict['xmax'] = newxmax
-                geodict['ymin'] = newymin
-                geodict['ymax'] = newymax
-                geodict['ncols'] = n
-                geodict['nrows'] = m
-            else:
-                data = np.flipud(data)
-                ixmin1 = 0
-                ixmax1 = np.floor((xmax - geodict['xmin'])/geodict['xdim']).astype(int)
-                ixmin2 = np.floor((xmin - geodict['xmin'])/geodict['xdim']).astype(int)
-                ixmax2 = geodict['ncols']-1
-                iymin = (np.floor((ymin - geodict['ymin'])/geodict['ydim'])+1).astype(int)
-                iymax = (np.floor((ymax - geodict['ymin'])/geodict['ydim'])+1).astype(int)
-                section1 = data[iymin:iymax,ixmin2:ixmax2]
-                section2 = data[iymin:iymax,ixmin1:ixmax1]
-                data = np.hstack((section1,section2))
-                m,n = data.shape
-                geodict['xmax'] += 360
-                geodict['xmin'] = xmin
-                geodict['ymin'] = ymin
-                geodict['ymax'] = ymax
-                geodict['ncols'] = n
-                geodict['ncols'] = n
+            data,geodict = cls._subsetRegions(data,bounds,geodict,xvar,yvar,firstColumnDuplicated)
         
         f.close()
         return (data,geodict)
@@ -285,7 +256,9 @@ class GMTGrid(Grid2D):
         :param fname:
            File name of GMT NetCDF3 grid
         :returns:
-          GeoDict specifying spatial extent, resolution, and shape of grid inside NetCDF file.
+           - GeoDict specifying spatial extent, resolution, and shape of grid inside NetCDF file.
+           - xvar array specifying X coordinates of data columns
+           - xvar array specifying Y coordinates of data rows
         """
         cdf = netcdf.netcdf_file(filename)
         geodict = {}
@@ -338,7 +311,23 @@ class GMTGrid(Grid2D):
         return (geodict,xvar,yvar)
 
     @classmethod
-    def subsetRegions(self,zvar,bounds,fgeodict,xvar,yvar,firstColumnDuplicated):
+    def _subsetRegions(self,zvar,bounds,fgeodict,xvar,yvar,firstColumnDuplicated):
+        """Internal method used to do subsampling of data for all three GMT formats.
+        :param zvar:
+          A numpy array-like thing (CDF/HDF variable, or actual numpy array)
+        :param bounds:
+          Tuple with (xmin,xmax,ymin,ymax) for subsetting.
+        :param fgeodict:
+          Geo dictionary with the file information.
+        :param xvar:
+          Numpy array specifying X coordinates of data columns
+        :param yvar:
+          Numpy array specifying Y coordinates of data rows
+        :param firstColumnDuplicated:
+          Boolean - is this a file where the last column of data is the same as the first (for grids that span entire globe).
+        :returns:
+          Tuple of (data,geodict) (subsetted data and geodict describing that data).
+        """
         txmin,txmax,tymin,tymax = bounds
         #we're not doing anything fancy with the data here, just cutting out what we need
         xmin = max(fgeodict['xmin'],txmin)
@@ -418,7 +407,7 @@ class GMTGrid(Grid2D):
                 data = data[:,0:-1]
                 geodict['xmax'] -= geodict['xdim']
         else:
-            data,geodict = cls.subsetRegions(cdf.variables['z'],bounds,geodict,xvar,yvar,firstColumnDuplicated)
+            data,geodict = cls._subsetRegions(cdf.variables['z'],bounds,geodict,xvar,yvar,firstColumnDuplicated)
         cdf.close()
         return (data,geodict)
 
@@ -496,7 +485,7 @@ class GMTGrid(Grid2D):
                 data = data[:,0:-1]
                 geodict['xmax'] -= geodict['xdim']
         else:
-            data,geodict = cls.subsetRegions(f['z'],bounds,geodict,xvar,yvar,firstColumnDuplicated)
+            data,geodict = cls._subsetRegions(f['z'],bounds,geodict,xvar,yvar,firstColumnDuplicated)
         f.close()
         return (data,geodict)
 

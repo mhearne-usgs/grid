@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 
+#stdlib imports
+import abc
+import textwrap
+
+#third party imports
 from gridbase import Grid
 from dataset import DataSetException
 import numpy as np
 from scipy import interpolate
-import abc
-import textwrap
+
 
 class Grid2D(Grid):
     """
@@ -14,36 +18,39 @@ class Grid2D(Grid):
     can be used with this class.  Grids are assumed to be pixel-registered - that is, grid coordinates
     represent the value at the *center* of the cells.
     """
-    reqfields = set(['xmin','xmax','ymin','ymax','xdim','ydim'])
+    reqfields = set(['xmin','xmax','ymin','ymax','xdim','ydim','ncols','nrows'])
     def __init__(self,data=None,geodict=None):
         """
         Construct a Grid object.
         
         :param data: 
-            A 2D numpy array
+            A 2D numpy array (can be None)
         :param geodict: 
-            A dictionary containing the following fields:
+            A dictionary (or None) containing the following fields:
              - xmin Longitude minimum (decimal degrees) (Center of upper left cell)
              - xmax Longitude maximum (decimal degrees) (Center of upper right cell)
              - ymin Longitude minimum (decimal degrees) (Center of lower left cell)
              - ymax Longitude maximum (decimal degrees) (Center of lower right cell)
              - xdim Cell width (decimal degrees)
              - ydim Cell height (decimal degrees)
-             - (optional) nrows Number of rows of input data (will be adjusted if incorrect)
-             - (optional) ncols Number of columns of input data (will be adjusted if incorrect)
+             - nrows Number of rows of input data (must match input data dimensions)
+             - ncols Number of columns of input data (must match input data dimensions)
         :returns:
             A Grid object.  Internal representation of geodict input will have nrows/ncols fields added.
-            If these 
+        :raises DataSetException:
+           When data is not 2D or the number of rows and columns do not match the geodict.
         """
         if data is not None and geodict is not None:
             #complain if data is not 2D (squeeze 1d dimensions out)
             dims = data.shape
             if len(dims) != 2:
                 raise DataSetException('Grid data must be 2D.  Input data has shape of %s' % str(data.shape))
+            nrows,ncols = dims
+            if nrows != geodict['nrows'] or ncols != geodict['ncols']:
+                raise DataSetException('Input geodict does not match shape of input data.')
             #complain if geodict does not have all required fields
             if not set(geodict.keys()).issuperset(self.reqfields):
-                raise DataSetException('Grid data must be 2D.  Input data has shape of %s' % str(data.shape))
-            geodict['nrows'],geodict['ncols'] = data.shape
+                raise DataSetException('Missing some of required fields in geodict.')
             self._geodict = geodict.copy()
             self._data = data.copy()
         else:
@@ -151,7 +158,7 @@ class Grid2D(Grid):
     def trim(self,bounds,resample=False,method='linear'):
         """
         Trim data to a smaller set of bounds, resampling if requested.  If not resampling,
-        data will be trimmed to smallest grid boundary possible.
+        data will be trimmed to largest grid boundary possible.
         
         :param bounds:
            Tuple of (lonmin,lonmax,latmin,latmax)
@@ -170,9 +177,9 @@ class Grid2D(Grid):
         if not resample:
             uly,ulx = self.getRowCol(ymax,xmin,returnFloat=True)
             lry,lrx = self.getRowCol(ymin,xmax,returnFloat=True)
-            uly = int(np.floor(uly))
-            ulx = int(np.ceil(ulx))
-            lrx = int(np.floor(lrx))
+            uly = int(np.floor(uly)) #these are in pixel space!
+            ulx = int(np.floor(ulx))
+            lrx = int(np.ceil(lrx))
             lry = int(np.ceil(lry))
             self._data = self._data[uly:lry+1,ulx:lrx+1]
             newymax,newxmin = self.getLatLon(uly,ulx)
@@ -332,10 +339,10 @@ class Grid2D(Grid):
         if method in ['linear','cubic','quintic']:
             if not np.isnan(self._data).any():
                 #at the time of this writing, interp2d does not support NaN values at all.
-                #switching to griddata, which is slower by ~2 orders of magnitude but supports NaN.
                 f = interpolate.interp2d(basex,basey,self._data,kind=method)
                 self._data = f(xi,yi)
             else:
+                #is Nan values are present, use griddata (slower by ~2 orders of magnitude but supports NaN).
                 xi,yi = np.meshgrid(xi,yi)
                 newrows,newcols = xi.shape
                 xi = xi.flatten()
@@ -412,46 +419,61 @@ def _test_trim():
     grid.trim(newbounds,resample=True)
     print grid.getData()
     print grid.getGeoDict()
-    
-def _test():
-    xmin = 118.5
-    xmax = 120.5
-    ymin = 32.0
-    ymax = 34.0
-    xdim = 0.25
-    ydim = 0.25
-    ncols = len(np.arange(xmin,xmax+xdim,xdim))
-    nrows = len(np.arange(ymin,ymax+ydim,ydim))
-    data = np.arange(0,nrows*ncols)
-    data.shape = (nrows,ncols)
-    geodict = {'xmin':xmin,
-               'xmax':xmax,
-               'ymin':ymin,
-               'ymax':ymax,
-               'xdim':xdim,
-               'ydim':ydim,
-               'nrows':nrows,
-               'ncols':ncols}
+
+def _test_resample():
+    geodict = {'xmin':0.5,'xmax':4.5,'ymin':0.5,'ymax':4.5,'xdim':1.0,'ydim':1.0,'nrows':5,'ncols':5}
+    data = np.arange(0,25).reshape(5,5)
+
+    print 'Testing data trimming without resampling...'
     grid = Grid2D(data,geodict)
+    bounds = (2.0,3.0,2.0,3.0)
+    grid.trim(bounds,resample=False)
+    output = np.array([[6,7,8],[11,12,13],[16,17,18]])
+    np.testing.assert_almost_equal(grid.getData(),output)
+    print 'Passed data trimming without resampling...'
+
+    print 'Testing data trimming with resampling...'
+    grid = Grid2D(data,geodict)
+    grid.trim(bounds,resample=True)
+    output = np.array([[9.0,10.0],[14.0,15.0]])
+    np.testing.assert_almost_equal(grid.getData(),output)
+    print 'Passed data trimming with resampling...'
+    
+def _test_basics():
+    geodict = {'xmin':0.5,'xmax':3.5,'ymin':0.5,'ymax':3.5,'xdim':1.0,'ydim':1.0,'nrows':4,'ncols':4}
+    data = np.arange(0,16).reshape(4,4)
+    grid = Grid2D(data,geodict)
+    print 'Testing basic Grid2D functionality (retrieving data, lat/lon to pixel coordinates, etc...'
+    np.testing.assert_almost_equal(grid.getData(),data)
+
+    assert grid.getGeoDict() == geodict
+
+    assert grid.getBounds() == (geodict['xmin'],geodict['xmax'],geodict['ymin'],geodict['ymax'])
+    
     lat,lon = grid.getLatLon(0,0)
+
+    assert lat == 3.5 and lon == 0.5
+        
     row,col = grid.getRowCol(lat,lon)
+
+    assert row == 0 and col == 0
+    
     value = grid.getValue(lat,lon)
-    frow,fcol = grid.getRowCol(33.3,119.1,returnFloat=True)
-    irow,icol = grid.getRowCol(33.3,119.1,returnFloat=False)
-    trimbounds = (xmin+0.3,xmax-0.3,ymin+0.3,ymax-0.3)
-    print grid.getData()
-    print grid.getData().shape
-    grid.trim(trimbounds,resample=True)
-    print lat,lon
-    print row,col
-    print value
-    print irow,icol
-    print frow,fcol
-    print grid.getData()
-    print grid.getData().shape
+
+    assert value == 0
+    
+    frow,fcol = grid.getRowCol(1.0,3.0,returnFloat=True)
+
+    assert frow == 2.5 and fcol == 2.5
+    
+    irow,icol = grid.getRowCol(1.0,3.0,returnFloat=False)
+
+    assert irow == 2 and icol == 2
+    print 'Passed basic Grid2D functionality (retrieving data, lat/lon to pixel coordinates, etc...'
     
 if __name__ == '__main__':
-    _test_trim()
+    _test_basics()
+    _test_resample()
     
     
         

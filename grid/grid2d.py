@@ -321,14 +321,16 @@ class Grid2D(Grid):
         :param geodict: 
             geodict dictionary from another grid whose extents are inside the extent of this grid.
         :keyword method: 
-            Optional interpolation method - ['linear', 'cubic','quintic','nearest']
+            Optional interpolation method - ['linear', 'cubic','nearest']
         :raises DataSetException: 
            If the Grid object upon which this function is being called is not completely contained by the grid to which this Grid is being resampled.
         :raises DataSetException: 
+           If the method is not one of ['nearest','linear','cubic']
            If the resulting interpolated grid shape does not match input geodict.
-
         This function modifies the internal griddata and geodict object variables.
         """
+        if method not in ['linear', 'cubic','nearest']:
+            raise DataSetException('Resampling method must be one of "linear", "cubic","nearest"')
         geodict = super(Grid2D,self).fillGeoDict(geodict)
         xi,yi = self._getInterpCoords(geodict)
 
@@ -336,7 +338,7 @@ class Grid2D(Grid):
         baserows,basecols = self._geodict['nrows'],self._geodict['ncols']
         basex = np.arange(0,basecols) #base grid PIXEL coordinates
         basey = np.arange(0,baserows)
-        if method in ['linear','cubic','quintic']:
+        if method in ['linear','cubic']:
             if not np.isnan(self._data).any():
                 #at the time of this writing, interp2d does not support NaN values at all.
                 f = interpolate.interp2d(basex,basey,self._data,kind=method)
@@ -386,59 +388,6 @@ class Grid2D(Grid):
         self._geodict['xdim'] = geodict['xdim']
         self._geodict['ydim'] = geodict['ydim']
 
-def _test_trim():
-    geodict = {}
-    geodict['xmin'] = 0.5
-    geodict['ymax'] = 3.5
-    geodict['xmax'] = 3.5
-    geodict['ymin'] = 0.5
-    geodict['xdim'] = 1.0
-    geodict['ydim'] = 1.0
-    geodict['nrows'] = 4
-    geodict['ncols'] = 4
-    data = np.arange(0,16).reshape(4,4)
-    grid = Grid2D(data,geodict)
-    newbounds = (1.5,2.5,1.5,2.5)
-    print grid.getData()
-    grid.trim(newbounds,resample=False)
-    print grid.getData()
-
-    geodict = {}
-    geodict['xmin'] = 0.5
-    geodict['ymax'] = 3.5
-    geodict['xmax'] = 3.5
-    geodict['ymin'] = 0.5
-    geodict['xdim'] = 1.0
-    geodict['ydim'] = 1.0
-    geodict['nrows'] = 4
-    geodict['ncols'] = 4
-    data = np.arange(0,16).reshape(4,4)
-    grid = Grid2D(data,geodict)
-    newbounds = (1.0,3.0,1.0,3.0)
-    print grid.getData()
-    grid.trim(newbounds,resample=True)
-    print grid.getData()
-    print grid.getGeoDict()
-
-def _test_resample():
-    geodict = {'xmin':0.5,'xmax':4.5,'ymin':0.5,'ymax':4.5,'xdim':1.0,'ydim':1.0,'nrows':5,'ncols':5}
-    data = np.arange(0,25).reshape(5,5)
-
-    print 'Testing data trimming without resampling...'
-    grid = Grid2D(data,geodict)
-    bounds = (2.0,3.0,2.0,3.0)
-    grid.trim(bounds,resample=False)
-    output = np.array([[6,7,8],[11,12,13],[16,17,18]])
-    np.testing.assert_almost_equal(grid.getData(),output)
-    print 'Passed data trimming without resampling...'
-
-    print 'Testing data trimming with resampling...'
-    grid = Grid2D(data,geodict)
-    grid.trim(bounds,resample=True)
-    output = np.array([[9.0,10.0],[14.0,15.0]])
-    np.testing.assert_almost_equal(grid.getData(),output)
-    print 'Passed data trimming with resampling...'
-    
 def _test_basics():
     geodict = {'xmin':0.5,'xmax':3.5,'ymin':0.5,'ymax':3.5,'xdim':1.0,'ydim':1.0,'nrows':4,'ncols':4}
     data = np.arange(0,16).reshape(4,4)
@@ -471,9 +420,49 @@ def _test_basics():
     assert irow == 2 and icol == 2
     print 'Passed basic Grid2D functionality (retrieving data, lat/lon to pixel coordinates, etc...'
     
+def _test_resample():
+    geodict = {'xmin':0.5,'xmax':4.5,'ymin':0.5,'ymax':4.5,'xdim':1.0,'ydim':1.0,'nrows':5,'ncols':5}
+    data = np.arange(0,25).reshape(5,5)
+
+    print 'Testing data trimming without resampling...'
+    grid = Grid2D(data,geodict)
+    bounds = (2.0,3.0,2.0,3.0)
+    grid.trim(bounds,resample=False)
+    output = np.array([[6,7,8],[11,12,13],[16,17,18]])
+    np.testing.assert_almost_equal(grid.getData(),output)
+    print 'Passed data trimming without resampling...'
+
+    print 'Testing data trimming with resampling...'
+    grid = Grid2D(data,geodict)
+    grid.trim(bounds,resample=True)
+    output = np.array([[9.0,10.0],[14.0,15.0]])
+    np.testing.assert_almost_equal(grid.getData(),output)
+    print 'Passed data trimming with resampling...'
+    
+def _test_interpolate():
+    geodict = {'xmin':0.5,'xmax':4.5,'ymin':0.5,'ymax':4.5,'xdim':1.0,'ydim':1.0,'nrows':5,'ncols':5}
+    data = np.arange(0,25).reshape(5,5)
+    
+    for method in ['nearest','linear','cubic']:
+        print 'Testing interpolate with method "%s"...' % method
+        grid = Grid2D(data,geodict)
+        sampledict = {'xmin':2.0,'xmax':3.0,'ymin':2.0,'ymax':3.0,'xdim':1.0,'ydim':1.0}
+        grid.interpolateToGrid(sampledict,method=method)
+        if method == 'nearest':
+            output = np.array([[6.0,7.0],[11.0,17.0]])
+        elif method == 'linear':
+            output = np.array([[9.0,10.0],[14.0,15.0]])
+        elif method == 'cubic':
+            output = np.array([[9.0,10.0],[14.0,15.0]])
+        else:
+            pass
+        np.testing.assert_almost_equal(grid.getData(),output)
+        print 'Passed interpolate with method "%s".' % method
+        
+    
 if __name__ == '__main__':
     _test_basics()
     _test_resample()
-    
+    _test_interpolate()
     
         

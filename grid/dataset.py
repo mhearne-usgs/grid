@@ -11,6 +11,15 @@ class DataSetException(Exception):
     def __str__(self):
         return repr(self.value)
 
+class DataSetWarning(Warning):
+    """
+    Class to represent warnings in the DataSet class.
+    """
+    def __init__(self, value):
+        self.value = value
+    def __str__(self):
+        return repr(self.value)
+
 class DataSet(object):
         #This should be a @classmethod in subclasses
     @abc.abstractmethod

@@ -83,6 +83,31 @@ class Grid2D(Grid):
         parts = rstr.split('\n')
         newrstr = '\n'.join([p.strip() for p in parts])
         return textwrap.dedent(newrstr)
+
+    @classmethod
+    def _createSampleData(self,M,N):
+        """Used for internal testing - create an NxN grid with lower left corner at 0.5,0.5, xdim/ydim = 1.0
+        :param M:
+           Number of rows in output grid
+        :param N:
+           Number of columns in output grid
+        :returns:
+           GMTGrid object where data values are an NxN array of values from 0 to N-squared minus 1, and geodict
+           lower left corner is at 0.5/0.5 and cell dimensions are 1.0.
+        """
+        data = np.arange(0,M*N).reshape(M,N)
+        data = data.astype(np.int32) #arange gives int64 by default, not supported by netcdf3
+        xvar = np.arange(0.5,0.5+N,1.0)
+        yvar = np.arange(0.5,0.5+M,1.0)
+        geodict = {'nrows':M,
+                   'ncols':N,
+                   'xmin':0.5,
+                   'xmax':xvar[-1],
+                   'ymin':0.5,
+                   'ymax':yvar[-1],
+                   'xdim':1.0,
+                   'ydim':1.0}
+        return (data,geodict)
     
     #This should be a @classmethod in subclasses
     @abc.abstractmethod

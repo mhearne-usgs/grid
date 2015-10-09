@@ -290,27 +290,24 @@ class ShakeGrid(MultiGrid):
             ymax = geodict['ymax']
             if bounds[0] < xmin or bounds[1] > xmax or bounds[2] < ymin or bounds[3] > ymax:
                 isOutside = True
-            if resample:
-                if not doPadding:
-                    if isOutside:
-                        raise DataSetException('Cannot resample data given input bounds, unless doPadding is set to True.')
-                else:
-                    leftpad,rightpad,bottompad,toppad,geodict = super(MultiGrid,cls)._getPadding(geodict,bounds,padValue)
-                    for layername,layerdata in layers.iteritems():
-                        #pad left side
-                        layerdata = np.hstack((leftpad,layerdata))
-                        #pad right side
-                        layerdata = np.hstack((layerdata,rightpad))
-                        #pad bottom
-                        layerdata = np.vstack((layerdata,bottompad))
-                        #pad top
-                        layerdata = np.vstack((toppad,layerdata))
-                        grid = Grid2D(layerdata,geodict)
-                        if resample: #should I just do an interpolateToGrid() here?
-                            grid.trim(bounds,resample=resample,method=method)
-                        layers[layername] = grid.getData()
+            if isOutside and resample and not doPadding:
+                raise DataSetException('Cannot resample data given input bounds, unless doPadding is set to True.')
+
             if doPadding:
-                
+                leftpad,rightpad,bottompad,toppad,geodict = super(MultiGrid,cls)._getPadding(geodict,bounds,padValue)
+                for layername,layerdata in layers.iteritems():
+                    #pad left side
+                    layerdata = np.hstack((leftpad,layerdata))
+                    #pad right side
+                    layerdata = np.hstack((layerdata,rightpad))
+                    #pad bottom
+                    layerdata = np.vstack((layerdata,bottompad))
+                    #pad top
+                    layerdata = np.vstack((toppad,layerdata))
+                    grid = Grid2D(layerdata,geodict)
+                    if resample: #should I just do an interpolateToGrid() here?
+                        grid.trim(bounds,resample=resample,method=method)
+                    layers[layername] = grid.getData()
             else:
                 for layername,layerdata in layers.iteritems():
                     grid = Grid2D(layerdata,geodict)

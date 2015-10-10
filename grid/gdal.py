@@ -98,10 +98,10 @@ class GDALGrid(Grid2D):
                 (region1,region2) = self._createSections((xmin,xmax,ymin,ymax),fgeodict,firstColumnDuplicated)
                 (iulx1,iuly1,ilrx1,ilry1) = region1
                 (iulx2,iuly2,ilrx2,ilry2) = region2
-                window1 = (iuly1,ilry1,iulx1,ilrx1)
-                window2 = (iuly2,ilry2,iulx2,ilrx2)
-                section1 = src.read_band(1,window1)
-                section2 = src.read_band(1,window2)
+                window1 = ((iuly1,ilry1),(iulx1,ilrx1))
+                window2 = ((iuly2,ilry2),(iulx2,ilrx2))
+                section1 = src.read(1,window=window1)
+                section2 = src.read(1,window=window2)
                 data = np.hstack((section1,section2))
                 outrows,outcols = data.shape
                 xmin = (gxmin + iulx1*xdim)
@@ -436,11 +436,49 @@ def _resample_test():
         print 'Failed resample test:\n %s' % error
 
     os.remove('test.bil')
+
+def _meridian_test():
+    try:
+        print 'Testing resampling of global grid where sample crosses 180/-180 meridian...'
+        data = np.arange(0,84).astype(np.int32).reshape(7,12)
+        geodict = {'xmin':-180.0,'xmax':150.0,'ymin':-90.0,'ymax':90.0,'xdim':30,'ydim':30,'nrows':7,'ncols':12}
+        gdalgrid = GDALGrid(data,geodict)
+        gdalgrid.save('test.bil')
+
+        sampledict = {'xmin':105,'xmax':-105,'ymin':-15.0,'ymax':15.0,'xdim':30.0,'ydim':30.0,'nrows':2,'ncols':5}
+        gdalgrid5 = GDALGrid.load('test.bil',samplegeodict=sampledict,resample=True,doPadding=True)
+
+        output = np.array([[ 39.5,40.5,35.5,30.5,31.5,32.5],
+                           [ 51.5,52.5,47.5,42.5,43.5,44.5]])
+        #output = np.random.rand(2,6) #this will fail assertion test
+        np.testing.assert_almost_equal(gdalgrid5._data,output)
+        print 'Passed resampling of global grid where sample crosses 180/-180 meridian...'
+
+        print 'Testing resampling of global grid where sample crosses 180/-180 meridian and first column is duplicated by last...'
+        data = np.arange(0,84).astype(np.int32).reshape(7,12)
+        data = np.hstack((data,data[:,0].reshape(7,1)))
+        geodict = {'xmin':-180.0,'xmax':180.0,'ymin':-90.0,'ymax':90.0,'xdim':30,'ydim':30,'nrows':7,'ncols':13}
+        gdalgrid = GDALGrid(data,geodict)
+        gdalgrid.save('test.bil')
+
+        sampledict = {'xmin':105,'xmax':-105,'ymin':-15.0,'ymax':15.0,'xdim':30.0,'ydim':30.0,'nrows':2,'ncols':5}
+        gdalgrid5 = GDALGrid.load('test.bil',samplegeodict=sampledict,resample=True,doPadding=True)
+
+        output = np.array([[ 39.5,40.5,35.5,30.5,31.5,32.5],
+                           [ 51.5,52.5,47.5,42.5,43.5,44.5]])
+        #output = np.random.rand(2,6) #this will fail assertion test
+        np.testing.assert_almost_equal(gdalgrid5._data,output)
+        print 'Passed resampling of global grid where sample crosses 180/-180 meridian and first column is duplicated by last...'
+        
+    except AssertionError,error:
+        print 'Failed meridian test:\n %s' % error
+    os.remove('test.bil')
     
 if __name__ == '__main__':
     _format_test()
     _pad_test()
     _subset_test()
     _resample_test()
+    _meridian_test()
         
 

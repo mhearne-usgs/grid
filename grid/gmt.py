@@ -3,6 +3,7 @@
 #stdlib imports
 import struct
 import os.path
+import sys
 
 #third party imports
 import numpy as np
@@ -12,6 +13,86 @@ from gridbase import Grid
 from dataset import DataSetException
 import h5py
 
+NETCDF_TYPES = {'B':np.uint8,
+                'b':np.int8,
+                'h':np.int16,
+                'i':np.int32,
+                'f':np.float32,
+                'd':np.float64}
+
+INVERSE_NETCDF_TYPES = {'uint8':'B',
+                        'int8':'b',
+                        'int16':'h',
+                        'int32':'i',
+                        'float32':'f',
+                        'float64':'d'}
+
+def sub2ind(shape,subtpl):
+    """
+    Convert 2D subscripts into 1D index.
+    @param shape: Tuple indicating size of 2D array.
+    @param subtpl: Tuple of (possibly) numpy arrays of row,col values.
+    @return: 1D array of indices.
+    """
+    if len(shape) != 2 or len(shape) != len(subtpl):
+        raise IndexError, "Input size and subscripts must have length 2 and be equal in length"
+    
+    row,col = subtpl
+    nrows,ncols = shape
+    ind = ncols*row + col
+    return ind
+
+def indexArray(array,shp,i1,i2,j1,j2):
+    if len(array.shape) == 1:
+        nrows = i2-i1
+        ncols = j2-j1
+        if hasattr(array,'dtype'):
+            data = np.zeros((nrows,ncols),dtype=array.dtype)
+        else:
+            typecode = array.typecode()
+            dtype = NETCDF_TYPES[typecode]
+            data = np.zeros((nrows,ncols),dtype=dtype)
+        rowidx = np.arange(i1,i2)
+        i = 0
+        for row in rowidx:
+            idx1 = sub2ind(shp,(row,j1))
+            idx2 = sub2ind(shp,(row,j2))
+            data[i,:] = array[idx1:idx2]
+            i += 1
+    else:
+        data = array[i1:i2,j1:j2].copy()
+    return data
+
+def createSampleXRange(M,N,filename,bounds=None,xdim=None,ydim=None):
+    if xdim is None:
+        xdim = 1.0
+    if ydim is None:
+        ydim = 1.0
+    if bounds is None:
+        xmin = 0.5
+        xmax = xmin + (N-1)*xdim
+        ymin = 0.5
+        ymax = ymin + (M-1)*ydim
+    else:
+        xmin,xmax,ymin,ymax = bounds
+    data = np.arange(0,M*N).reshape(M,N).astype(np.int32)
+    cdf = netcdf.netcdf_file(filename,'w')
+    cdf.createDimension('side',2)
+    cdf.createDimension('xysize',M*N)
+    dim = cdf.createVariable('dimension','i',('side',))
+    dim[:] = np.array([N,M])
+    spacing = cdf.createVariable('spacing','i',('side',))
+    spacing[:] = np.array([xdim,ydim])
+    zrange = cdf.createVariable('z_range',INVERSE_NETCDF_TYPES[str(data.dtype)],('side',))
+    zrange[:] = np.array([data.min(),data.max()])
+    x_range = cdf.createVariable('x_range','d',('side',))
+    x_range[:] = np.array([xmin,xmax])
+    y_range = cdf.createVariable('y_range','d',('side',))
+    y_range[:] = np.array([ymin,ymax])
+    z = cdf.createVariable('z',INVERSE_NETCDF_TYPES[str(data.dtype)],('xysize',))
+    z[:] = data.flatten()
+    cdf.close()
+    return data
 
 def createSampleGrid(M,N):
     """Used for internal testing - create an NxN grid with lower left corner at 0.5,0.5, xdim/ydim = 1.0
@@ -292,8 +373,8 @@ class GMTGrid(Grid2D):
             geodict['ymax'] = cdf.variables['y_range'].data[1]
             geodict['ncols'],geodict['nrows'] = cdf.variables['dimension'].data
             #geodict['xdim'],geodict['ydim'] = cdf.variables['spacing'].data
-            xvar = np.linspace(geodict['xmin'],geodict['xmax'],num=ncols)
-            yvar = np.linspace(geodict['ymin'],geodict['ymax'],num=nrows)
+            xvar = np.linspace(geodict['xmin'],geodict['xmax'],num=geodict['ncols'])
+            yvar = np.linspace(geodict['ymin'],geodict['ymax'],num=geodict['nrows'])
             geodict['xdim'] = xvar[1] - xvar[0]
             geodict['ydim'] = yvar[1] - yvar[0]
         else:
@@ -328,6 +409,7 @@ class GMTGrid(Grid2D):
         :returns:
           Tuple of (data,geodict) (subsetted data and geodict describing that data).
         """
+        isScanLine = len(zvar.shape) == 1
         txmin,txmax,tymin,tymax = bounds
         #we're not doing anything fancy with the data here, just cutting out what we need
         xmin = max(fgeodict['xmin'],txmin)
@@ -344,7 +426,11 @@ class GMTGrid(Grid2D):
         gnrows = fgeodict['nrows']
         gncols = fgeodict['ncols']
         if xmin == gxmin and xmax == gxmax and ymin == gymin and ymax == gymax:
-            data = np.flipud(zvar[:].copy())
+            #data = np.flipud(zvar[:].copy())
+            if isScanLine:
+                data = indexArray(zvar,(gnrows,gncols),0,gnrows,0,gncols)
+            else:
+                data = np.flipud(indexArray(zvar,(gnrows,gncols),0,gnrows,0,gncols))
             if firstColumnDuplicated:
                 data = data[:,0:-1]
                 geodict['xmax'] -= geodict['xdim']
@@ -352,16 +438,21 @@ class GMTGrid(Grid2D):
             if xmin > xmax:
                 #cut user's request into two regions - one from the minimum to the
                 #meridian, then another from the meridian to the maximum.
-                (region1,region2) = self._createSections((xmin,xmax,ymin,ymax),fgeodict,firstColumnDuplicated)
+                (region1,region2) = self._createSections((xmin,xmax,ymin,ymax),fgeodict,firstColumnDuplicated,isScanLine=isScanLine)
                 (iulx1,iuly1,ilrx1,ilry1) = region1
                 (iulx2,iuly2,ilrx2,ilry2) = region2
                 outcols1 = long(ilrx1-iulx1)
                 outcols2 = long(ilrx2-iulx2)
                 outcols = long(outcols1+outcols2)
                 outrows = long(ilry1-iuly1)
-                section1 = zvar[iuly1:ilry1,iulx1:ilrx1].copy()
-                section2 = zvar[iuly2:ilry2,iulx2:ilrx2].copy()
-                data = np.flipud(np.concatenate((section1,section2),axis=1))
+                section1 = indexArray(zvar,(gnrows,gncols),iuly1,ilry1,iulx1,ilrx1)
+                #section1 = zvar[iuly1:ilry1,iulx1:ilrx1].copy()
+                #section2 = zvar[iuly2:ilry2,iulx2:ilrx2].copy()
+                section2 = indexArray(zvar,(gnrows,gncols),iuly2,ilry2,iulx2,ilrx2)
+                if isScanLine:
+                    data = np.concatenate((section1,section2),axis=1)
+                else:
+                    data = np.flipud(np.concatenate((section1,section2),axis=1))
                 outrows,outcols = data.shape
                 xmin = (gxmin + iulx1*xdim)
                 ymax = gymax - iuly1*ydim
@@ -377,14 +468,23 @@ class GMTGrid(Grid2D):
                 #use that as an index to get the xmin on a grid cell
                 ixmin = np.where((xmin-xvar) >= 0)[0].max()
                 ixmax = np.where((xmax-xvar) <= 0)[0].min()
-                iymin = np.where((ymin-yvar) >= 0)[0].max()
-                iymax = np.where((ymax-yvar) <= 0)[0].min()
+
+                if isScanLine:
+                    iymin = int((gymax - ymax)/ydim)
+                    iymax = int((gymax - ymin)/ydim)
+                else:
+                    iymin = np.where((ymin-yvar) >= 0)[0].max()
+                    iymax = np.where((ymax-yvar) <= 0)[0].min()
 
                 fgeodict['xmin'] = xvar[ixmin].copy()
                 fgeodict['xmax'] = xvar[ixmax].copy()
                 fgeodict['ymin'] = yvar[iymin].copy()
                 fgeodict['ymax'] = yvar[iymax].copy()
-                data = np.flipud(zvar[iymin:iymax+1,ixmin:ixmax+1].copy())
+                if isScanLine:
+                    data = indexArray(zvar,(gnrows,gncols),iymin,iymax+1,ixmin,ixmax+1)
+                else:
+                    data = np.flipud(indexArray(zvar,(gnrows,gncols),iymin,iymax+1,ixmin,ixmax+1))
+                #data = np.flipud(zvar[iymin:iymax+1,ixmin:ixmax+1].copy())
                 fgeodict['nrows'],fgeodict['ncols'] = data.shape
 
         return (data,fgeodict)
@@ -402,7 +502,14 @@ class GMTGrid(Grid2D):
         geodict,xvar,yvar = cls.getNetCDFHeader(filename)
         cdf = netcdf.netcdf_file(filename)
         if bounds is None:
-            data = np.flipud(cdf.variables['z'].data.copy())
+            nrows,ncols = (geodict['nrows'],geodict['ncols'])
+            data = cdf.variables['z'].data.copy()
+            shp = cdf.variables['z'].shape
+            if len(shp) == 1: #sometimes the z array is flattened out, this should put it back
+                data.shape = (nrows,ncols)
+            if not cdf.variables.has_key('x_range'):
+                data = np.flipud(data)
+                
             if firstColumnDuplicated:
                 data = data[:,0:-1]
                 geodict['xmax'] -= geodict['xdim']
@@ -816,7 +923,7 @@ def _resample_test():
         print 'Failed resample test:\n %s' % error
 
     os.remove('test.grd')
-
+    
 def _meridian_test():
     try:
         for fmt in ['netcdf','hdf','native']:
@@ -854,9 +961,61 @@ def _meridian_test():
     except AssertionError,error:
         print 'Failed meridian test:\n %s' % error
     os.remove('test.grd')
+
+def _index_test():
+    data = np.arange(0,42).reshape(6,7)
+    d2 = data.flatten()
+    shp = data.shape
+    res1 = data[1:3,1:3]
+    res2 = indexArray(d2,shp,1,3,1,3)
+    np.testing.assert_almost_equal(res1,res2)
+
+def _xrange_test():
+    #there is a type of GMT netcdf file where the data is in scanline order
+    #we don't care enough to support this in the save() method, but we do need a test for it.  Sigh.
+    try:
+        print 'Testing loading whole x_range style grid...'
+        data = createSampleXRange(6,4,'test.grd')
+        gmtgrid = GMTGrid.load('test.grd')
+        np.testing.assert_almost_equal(data,gmtgrid.getData())
+        print 'Passed loading whole x_range style grid...'
+
+        print 'Testing loading partial x_range style grid...'
+        #test with subsetting
+        newdict = {'xmin':1.5,'xmax':2.5,'ymin':1.5,'ymax':3.5,'xdim':1.0,'ydim':1.0}
+        gmtgrid3 = GMTGrid.load('test.grd',samplegeodict=newdict)
+        output = np.array([[9,10],
+                           [13,14],
+                           [17,18]])
+        np.testing.assert_almost_equal(gmtgrid3._data,output)
+        print 'Passed loading partial x_range style grid...'
+
+        print 'Testing x_range style grid where we cross meridian...'
+        data = createSampleXRange(7,12,'test.grd',(-180.,150.,-90.,90.),xdim=30.,ydim=30.)
+        sampledict = {'xmin':105,'xmax':-105,'ymin':-15.0,'ymax':15.0,'xdim':30.0,'ydim':30.0,'nrows':2,'ncols':5}
+        gmtgrid5 = GMTGrid.load('test.grd',samplegeodict=sampledict,resample=True,doPadding=True)
+        print 'Testing x_range style grid where we cross meridian...'
+        
+    except AssertionError,error:
+        print 'Failed an xrange test:\n %s' % error
+    os.remove('test.grd')    
+    
 if __name__ == '__main__':
-    _save_test()
-    _pad_test()
-    _subset_test()
-    _resample_test()
-    _meridian_test()
+    if len(sys.argv) > 1:
+        gmtfile = sys.argv[1]
+        sampledict = None
+        if len(sys.argv) == 6:
+            xmin = float(sys.argv[2])
+            xmax = float(sys.argv[3])
+            ymin = float(sys.argv[4])
+            ymax = float(sys.argv[5])
+            sampledict = {'xmin':xmin,'xmax':xmax,'ymin':ymin,'ymax':ymax}
+            grid = GMTGrid.load(gmtfile,samplegeodict=sampledict)
+    else:
+        _index_test()
+        _save_test()
+        _pad_test()
+        _subset_test()
+        _resample_test()
+        _meridian_test()
+        _xrange_test()

@@ -120,12 +120,16 @@ class Grid2D(Grid):
         raise NotImplementedError('Save method not implemented in base class')
 
     @classmethod
-    def _createSections(self,bounds,geodict,firstColumnDuplicated):
-        """Given a grid that goes from 0 to 180 degrees, figure out the two pixel regions that up both sides of the subset
+    def _createSections(self,bounds,geodict,firstColumnDuplicated,isScanLine=False):
+        """Given a grid that goes from -180 to 180 degrees, figure out the two pixel regions that up both sides of the subset
         :param bounds:
            Tuple of (xmin,xmax,ymin,ymax)
         :param geodict:
            Geodict dictionary
+        :param firstColumnDuplicated:
+          Boolean indicating whether this is a global data set where the first and last columns are identical
+        :param isScanLine:
+          Boolean indicating whether this array is in scan line order (pixel[0,0] is the geographic upper left).
         :returns:
           Two tuples of 4 elements each - (iulx,iuly,ilrx,ilry). The first tuple defines the pixel offsets for the left
           side of the subsetted region, and the second tuple defines the pixel offsets for the right side.
@@ -139,14 +143,20 @@ class Grid2D(Grid):
         nrows = geodict['nrows']
         #section 1
         iulx1 = int(np.floor((bxmin - ulx)/xdim))
-        iuly1 = int(np.ceil((uly - bymax)/ydim))
         ilrx1 = int(ncols)
-        ilry1 = int(np.floor((uly - bymin)/ydim)) + 1
+
+        if not isScanLine:
+            iuly1 = int(np.ceil((uly - bymax)/ydim))
+            ilry1 = int(np.floor((uly - bymin)/ydim)) + 1
+        else:
+            ilry1 = int(np.ceil((uly - bymin)/ydim))
+            iuly1 = int(np.floor((uly - bymax)/ydim)) + 1
+
         #section 2
         iulx2 = 0
-        iuly2 = int(np.ceil((uly - bymax)/ydim))
         ilrx2 = int(np.ceil((bxmax - ulx)/xdim)) + 1
-        ilry2 = int(np.floor((uly - bymin)/ydim)) + 1
+        iuly2 = iuly1
+        ilry2 = ilry1
 
         if firstColumnDuplicated:
             ilrx1 -= 1
@@ -463,7 +473,7 @@ def _test_resample():
     output = np.array([[9.0,10.0],[14.0,15.0]])
     np.testing.assert_almost_equal(grid.getData(),output)
     print 'Passed data trimming with resampling...'
-    
+
 def _test_interpolate():
     geodict = {'xmin':0.5,'xmax':4.5,'ymin':0.5,'ymax':4.5,'xdim':1.0,'ydim':1.0,'nrows':5,'ncols':5}
     data = np.arange(0,25).reshape(5,5)
@@ -483,7 +493,6 @@ def _test_interpolate():
             pass
         np.testing.assert_almost_equal(grid.getData(),output)
         print 'Passed interpolate with method "%s".' % method
-        
     
 if __name__ == '__main__':
     _test_basics()

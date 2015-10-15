@@ -23,6 +23,19 @@ class Grid(DataSet):
         """
         raise NotImplementedError
 
+    @abc.abstractmethod #should be a classmethod when instantiated
+    def getBoundsWithin(filename,geodict):
+        """
+        Abstract method to return a geodict for this file that is guaranteed to be inside the input geodict defined, without resampling.
+        :param filename:
+           The name of the file whose resolution/extent should be used.
+        :param geodict:
+           The geodict which is used as the base for finding the bounds for this file guaranteed to be inside of this geodict.
+        :raises NotImplementedError:
+          Always in base class
+        """
+        raise NotImplementedError
+    
     @classmethod
     def _getPadding(cls,geodict,padbounds,padvalue):
         xmin,xmax,ymin,ymax = padbounds

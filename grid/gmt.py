@@ -189,7 +189,27 @@ class GMTGrid(Grid2D):
         else:
             raise DataSetException('Unknown file type for file "%s".' % filename)
         return geodict
-            
+
+    @classmethod
+    def getBoundsWithin(cls,filename,geodict):
+        fgeodict = cls.getFileGeoDict(filename)
+        fxmin,fxmax,fymin,fymax = (fgeodict['xmin'],fgeodict['xmax'],fgeodict['ymin'],fgeodict['ymax'])
+        xmin,xmax,ymin,ymax = (geodict['xmin'],geodict['xmax'],geodict['ymin'],geodict['ymax'])
+        fxdim,fydim = (fgeodict['xdim'],fgeodict['ydim'])
+        
+        ulcol = int(np.ceil((xmin - fxmin)/fxdim))+1
+        ulrow = int(np.floor((ymax - fymin)/fydim))-1
+        lrcol = int(np.floor((xmax - fxmin)/fxdim))-1
+        lrrow = int(np.ceil((ymin-fymin)/fydim))+1
+
+        newxmin = fxmin + ulcol*fxdim
+        newxmax = fxmin + lrcol*fxdim
+        newymax = fymin + ulrow*fydim
+        newymin = fymin + lrrow*fydim
+
+        outgeodict = {'xmin':newxmin,'xmax':newxmax,'ymin':newymin,'ymax':newymax,'xdim':fxdim,'ydim':fydim}
+        return outgeodict
+    
     @classmethod
     def getNativeHeader(cls,fname,fmt=None):
         """Get the header information from a GMT native grid file.
@@ -472,14 +492,17 @@ class GMTGrid(Grid2D):
                 if isScanLine:
                     iymin = int((gymax - ymax)/ydim)
                     iymax = int((gymax - ymin)/ydim)
+                    fgeodict['ymax'] = gymax - iymin*ydim
+                    fgeodict['ymin'] = gymax - iymax*ydim
                 else:
                     iymin = np.where((ymin-yvar) >= 0)[0].max()
                     iymax = np.where((ymax-yvar) <= 0)[0].min()
-
+                    fgeodict['ymin'] = yvar[iymin].copy()
+                    fgeodict['ymax'] = yvar[iymax].copy()
+                    
                 fgeodict['xmin'] = xvar[ixmin].copy()
                 fgeodict['xmax'] = xvar[ixmax].copy()
-                fgeodict['ymin'] = yvar[iymin].copy()
-                fgeodict['ymax'] = yvar[iymax].copy()
+                
                 if isScanLine:
                     data = indexArray(zvar,(gnrows,gncols),iymin,iymax+1,ixmin,ixmax+1)
                 else:
@@ -999,6 +1022,24 @@ def _xrange_test():
     except AssertionError,error:
         print 'Failed an xrange test:\n %s' % error
     os.remove('test.grd')    
+
+def _within_test():
+    try:
+        print 'Testing class method getBoundsWithin()...'
+        gmtgrid = createSampleGrid(8,8)
+        gmtgrid.save('test.grd',format='netcdf')
+        sdict = {'xmin':2.7,'xmax':6.7,'ymin':2.7,'ymax':6.7}
+        newdict = GMTGrid.getBoundsWithin('test.grd',sdict)
+        testdict = {'xmin':4.5,'xmax':5.5,'ymin':4.5,'ymax':5.5,'xdim':1.0,'ydim':1.0}
+        assert newdict == testdict
+        gmtgrid2 = GMTGrid.load('test.grd',samplegeodict=newdict)
+        output = np.array([[20,21],
+                           [28,29]])
+        np.testing.assert_almost_equal(gmtgrid2.getData(),output)
+        print 'Passed class method getBoundsWithin()...'
+    except AssertionError,error:
+        print 'Failed test of getBoundsWithin():\n %s' % error
+    os.remove('test.grd')
     
 if __name__ == '__main__':
     if len(sys.argv) > 1:
@@ -1019,3 +1060,4 @@ if __name__ == '__main__':
         _resample_test()
         _meridian_test()
         _xrange_test()
+        _within_test()

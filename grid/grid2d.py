@@ -118,7 +118,7 @@ class Grid2D(Grid):
     @abc.abstractmethod
     def save(self,filename): #would we ever want to save a subset of the data?
         raise NotImplementedError('Save method not implemented in base class')
-
+    
     @classmethod
     def _createSections(self,bounds,geodict,firstColumnDuplicated,isScanLine=False):
         """Given a grid that goes from -180 to 180 degrees, figure out the two pixel regions that up both sides of the subset

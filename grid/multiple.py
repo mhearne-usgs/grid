@@ -220,6 +220,6 @@ class MultiGrid(Grid):
         """
         for layername,layer in self._layers.iteritems():
             layer.interpolateToGrid(geodict,method=method)
-        self._geodict = layer.getGeodict().copy()
+        self._geodict = layer.getGeoDict().copy()
 
     

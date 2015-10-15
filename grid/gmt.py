@@ -192,6 +192,15 @@ class GMTGrid(Grid2D):
 
     @classmethod
     def getBoundsWithin(cls,filename,geodict):
+        """
+        Return a geodict for a file that is guaranteed to be contained by an input geodict.
+        :param filename:
+          Path to an GMT grid file.
+        :param geodict:
+          Geodict defining a spatial extent that we want to envelope the returned geodict.
+        :returns:
+          A geodict that is guaranteed to be contained by input geodict.
+        """
         fgeodict = cls.getFileGeoDict(filename)
         fxmin,fxmax,fymin,fymax = (fgeodict['xmin'],fgeodict['xmax'],fgeodict['ymin'],fgeodict['ymax'])
         xmin,xmax,ymin,ymax = (geodict['xmin'],geodict['xmax'],geodict['ymin'],geodict['ymax'])
@@ -224,7 +233,7 @@ class GMTGrid(Grid2D):
         :returns:
            - GeoDict specifying spatial extent, resolution, and shape of grid inside NetCDF file.
            - xvar array specifying X coordinates of data columns
-           - xvar array specifying Y coordinates of data rows
+           - yvar array specifying Y coordinates of data rows
            - fmt If input fmt is None, this will be a best guess as to the data format in the file.
            - zscale Data multiplier
            - zoffset Value to be added to data

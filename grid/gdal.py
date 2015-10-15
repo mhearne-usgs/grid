@@ -32,6 +32,16 @@ class GDALGrid(Grid2D):
 
     @classmethod
     def getFileGeoDict(cls,filename):
+        """Get the spatial extent, resolution, and shape of grid inside ESRI grid file.
+        :param filename:
+           File name of ESRI grid file.
+        :returns:
+           - GeoDict specifying spatial extent, resolution, and shape of grid inside ESRI grid file.
+           - xvar array specifying X coordinates of data columns
+           - yvar array specifying Y coordinates of data rows
+        :raises DataSetException:
+          When the file contains a grid with more than one band.
+        """
         geodict = {}
         with rasterio.drivers():
             with rasterio.open(filename) as src:
@@ -48,10 +58,39 @@ class GDALGrid(Grid2D):
                 geodict['ncols'] = src.width
                 geodict['xmax'] = geodict['xmin'] + (geodict['ncols']-1)*geodict['xdim']
                 geodict['ymin'] = geodict['ymax'] - (geodict['nrows']-1)*geodict['ydim']
-        xvar = np.arange(geodict['xmin'],geodict['xmax']+geodict['xdim'])
-        yvar = np.arange(geodict['ymin'],geodict['ymax']+geodict['ydim'])
+        xvar = np.arange(geodict['xmin'],geodict['xmax']+geodict['xdim'],geodict['xdim'])
+        yvar = np.arange(geodict['ymin'],geodict['ymax']+geodict['ydim'],geodict['ydim'])
         return (geodict,xvar,yvar)
 
+    @classmethod
+    def getBoundsWithin(cls,filename,geodict):
+        """
+        Return a geodict for a file that is guaranteed to be contained by an input geodict.
+        :param filename:
+          Path to an ESRI grid file.
+        :param geodict:
+          Geodict defining a spatial extent that we want to envelope the returned geodict.
+        :returns:
+          A geodict that is guaranteed to be contained by input geodict.
+        """
+        fgeodict,xvar,yvar = cls.getFileGeoDict(filename)
+        fxmin,fxmax,fymin,fymax = (fgeodict['xmin'],fgeodict['xmax'],fgeodict['ymin'],fgeodict['ymax'])
+        xmin,xmax,ymin,ymax = (geodict['xmin'],geodict['xmax'],geodict['ymin'],geodict['ymax'])
+        fxdim,fydim = (fgeodict['xdim'],fgeodict['ydim'])
+        
+        ulcol = int(np.ceil((xmin - fxmin)/fxdim))+1
+        ulrow = int(np.floor((ymax - fymin)/fydim))-1
+        lrcol = int(np.floor((xmax - fxmin)/fxdim))-1
+        lrrow = int(np.ceil((ymin-fymin)/fydim))+1
+
+        newxmin = fxmin + ulcol*fxdim
+        newxmax = fxmin + lrcol*fxdim
+        newymax = fymin + ulrow*fydim
+        newymin = fymin + lrrow*fydim
+
+        outgeodict = {'xmin':newxmin,'xmax':newxmax,'ymin':newymin,'ymax':newymax,'xdim':fxdim,'ydim':fydim}
+        return outgeodict
+    
     @classmethod
     def _subsetRegions(self,src,bounds,fgeodict,xvar,yvar,firstColumnDuplicated):
         """Internal method used to do subsampling of data for all three GMT formats.
@@ -119,8 +158,11 @@ class GDALGrid(Grid2D):
                 ixmin = np.where((xmin-xvar) >= 0)[0].max()
                 ixmax = np.where((xmax-xvar) <= 0)[0].min()
 
-                iymax = int(np.ceil((gnrows-1) - ((ymin-gymin)/ydim)))
-                iymin = int(np.floor((gnrows-1) - ((ymax-gymin)/ydim)))
+                iymin = int((gymax - ymax)/ydim)
+                iymax = int((gymax - ymin)/ydim)
+                
+                # iymax = int(np.ceil((gnrows-1) - ((ymin-gymin)/ydim)))
+                # iymin = int(np.floor((gnrows-1) - ((ymax-gymin)/ydim)))
                
                 fgeodict['xmin'] = xvar[ixmin].copy()
                 fgeodict['xmax'] = xvar[ixmax].copy()
@@ -475,10 +517,21 @@ def _meridian_test():
     os.remove('test.bil')
     
 if __name__ == '__main__':
-    _format_test()
-    _pad_test()
-    _subset_test()
-    _resample_test()
-    _meridian_test()
+    if len(sys.argv) > 1:
+        gdalfile = sys.argv[1]
+        sampledict = None
+        if len(sys.argv) == 6:
+            xmin = float(sys.argv[2])
+            xmax = float(sys.argv[3])
+            ymin = float(sys.argv[4])
+            ymax = float(sys.argv[5])
+            sampledict = {'xmin':xmin,'xmax':xmax,'ymin':ymin,'ymax':ymax}
+            grid = GDALGrid.load(gdalfile,samplegeodict=sampledict)
+    else:
+        _format_test()
+        _pad_test()
+        _subset_test()
+        _resample_test()
+        _meridian_test()
         
 

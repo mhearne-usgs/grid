@@ -11,14 +11,6 @@ are IPython notebooks in the distribution.  They can be viewed here:
  * ShakeMap format grids: https://github.com/mhearne-usgs/grid/blob/master/notebooks/ShakeMap.ipynb
  * The Grid2D class (superclass of GDAL and GMT grids): https://github.com/mhearne-usgs/grid/blob/master/notebooks/Grid2D.ipynb
 
-openquake.hazardlib.geo
-rasterio
-numpy
-scipy
-h5py
-
-https://github.com/mapbox/rasterio
-
 Dependencies and Installation
 -----------------------------
 

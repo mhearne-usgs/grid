@@ -176,7 +176,9 @@ class MultiHazardGrid(MultiGrid):
 
 if __name__ == '__main__':
     shakefile = sys.argv[1]
+    t1 = datetime.datetime.now()
     sgrid = ShakeGrid.load(shakefile)
+    t2 = datetime.datetime.now()
     origin = {}
     origin['id'] = sgrid._eventDict['event_id']
     origin['source'] = sgrid._eventDict['event_network']
@@ -203,9 +205,13 @@ if __name__ == '__main__':
     tdict = {'name':'fred','family':{'wife':'wilma','daughter':'pebbles'}}
     mgrid = MultiHazardGrid(layers,sgrid.getGeoDict(),origin,header,metadata={'flintstones':tdict})
     mgrid.save('test.hdf')
+    t3 = datetime.datetime.now()
     mgrid2 = MultiHazardGrid.load('test.hdf')
+    t4 = datetime.datetime.now()
     xmlmb = os.path.getsize(shakefile)/float(1e6)
     hdfmb = os.path.getsize('test.hdf')/float(1e6)
-    print 'Input XML file size: %i MB' % xmlmb
-    print 'Output HDF file size: %i MB' % hdfmb
+    xmltime = (t2-t1).seconds + (t2-t1).microseconds/float(1e6)
+    hdftime = (t4-t3).seconds + (t4-t3).microseconds/float(1e6)
+    print 'Input XML file size: %.1f MB (loading time %.1f seconds)' % (xmlmb,xmltime)
+    print 'Output HDF file size: %.1f MB (loading time %.1f seconds)' % (hdfmb,hdftime)
     os.remove('test.hdf')    

@@ -155,7 +155,7 @@ def readShakeFile(fileobj):
 
     #use the numpy loadtxt function to read in the actual data
     #we're cheating by telling numpy.loadtxt that the last two lines of the XML file are comments
-    data = np.loadtxt(fileobj,comments='<') 
+    data = np.loadtxt(fileobj,comments='<').astype('float32')
     data = data[:,2:] #throw away lat/lon columns
     for i in range(0,len(fields)):
         field = fields[i]

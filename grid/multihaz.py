@@ -9,6 +9,7 @@ import os.path
 
 #third party imports
 import h5py
+from scipy.io import netcdf 
 import numpy as np
 from multiple import MultiGrid
 from shake import ShakeGrid
@@ -60,87 +61,164 @@ class MultiHazardGrid(MultiGrid):
             self._validateDict(tdict)
             self._dictDict[tdictname] = tdict.copy()
 
-    def save(self,filename):
-        f = h5py.File(filename, "w")
-        origin = f.create_group('origin')
-        for key,value in self._origin.iteritems():
-            if isinstance(value,datetime):
-                value = time.mktime(value.timetuple())
-            origin.attrs[key] = value
+    def save(self,filename,format='hdf'):
+        if format == 'hdf':
+            f = h5py.File(filename, "w")
+            origin = f.create_group('origin')
+            for key,value in self._origin.iteritems():
+                if isinstance(value,datetime):
+                    value = time.mktime(value.timetuple())
+                    origin.attrs[key] = value
+                    
+            header = f.create_group('header')
+            for key,value in self._header.iteritems():
+                if isinstance(value,datetime):
+                    value = time.mktime(value.timetuple())
+                header.attrs[key] = value
+            for groupname,tdict in self._dictDict.iteritems():
+                group = f.create_group(groupname)
+                for key,value in tdict.iteritems():
+                    group.attrs[key] = value
+            xvar = np.linspace(self._geodict['xmin'],self._geodict['xmax'],self._geodict['ncols'])
+            yvar = np.linspace(self._geodict['ymin'],self._geodict['ymax'],self._geodict['nrows'])
+            x = f.create_dataset('x',data=xvar,compression='gzip')
+            y = f.create_dataset('y',data=yvar,compression='gzip')
+            for layerkey,layer in self._layers.iteritems():
+                dset = f.create_dataset(layerkey,data=layer.getData(),compression='gzip')
 
-        header = f.create_group('header')
-        for key,value in self._header.iteritems():
-            if isinstance(value,datetime):
-                value = time.mktime(value.timetuple())
-            header.attrs[key] = value
-        for groupname,tdict in self._dictDict.iteritems():
-            group = f.create_group(groupname)
-            for key,value in tdict.iteritems():
-                group.attrs[key] = value
-        xvar = np.linspace(self._geodict['xmin'],self._geodict['xmax'],self._geodict['ncols'])
-        yvar = np.linspace(self._geodict['ymin'],self._geodict['ymax'],self._geodict['nrows'])
-        x = f.create_dataset('x',data=xvar,compression='gzip')
-        y = f.create_dataset('y',data=yvar,compression='gzip')
-        for layerkey,layer in self._layers.iteritems():
-            dset = f.create_dataset(layerkey,data=layer.getData(),compression='gzip')
-            
-        f.close()
+            f.close()
+        elif format == 'netcdf':
+            cdf = netcdf.netcdf_file(filename,'w')
+            for key,value in self._origin.iteritems():
+                okey = 'origin_%s' % key
+                if isinstance(value,datetime):
+                    value = time.mktime(value.timetuple())
+                setattr(cdf,okey,value)
+            for key,value in self._header.iteritems():
+                hkey = 'header_%s' % key
+                if isinstance(value,datetime):
+                    value = time.mktime(value.timetuple())
+                setattr(cdf,hkey,value)
+            cdf.createDimension('x', self._geodict['ncols'])
+            cdf.createDimension('y', self._geodict['nrows'])
+            xvar = f.createVariable('x', 'f', ('x',))
+            yvar = f.createVariable('y', 'f', ('y',))
+            xvar[:] = np.linspace(self._geodict['xmin'],self._geodict['xmax'],self._geodict['ncols'])
+            yvar[:] = np.linspace(self._geodict['ymin'],self._geodict['ymax'],self._geodict['nrows'])
+            for layerkey,layerdata in self._layers.iteritems():
+                var = cdf.createVariable(layerkey,'f',('y','x',))
+                var[:] = layerdata
+            cdf.close()
+        else:
+            raise DataSetException('Unsupported file format "%s"' % format)
+        
 
     @classmethod
-    def load(cls,filename):
-        f = h5py.File(filename, "r")
-        REQUIRED_GROUPS = ['origin','header']
-        REQUIRED_DATASETS = ['x','y']
-        for group in REQUIRED_GROUPS:
-            if group not in f.keys():
-                raise DataSetException('Missing required metadata group "%s"' % group)
-        for dset in REQUIRED_DATASETS:
-            if dset not in f.keys():
-                raise DataSetException('Missing required data set "%s"' % dset)
-
-        header = {}
-        for key,value in f['header'].attrs.iteritems():
-            if key.find('time') > -1:
-                value = datetime.utcfromtimestamp(value)
-            header[key] = value
-
-        origin = {}
-        for key,value in f['origin'].attrs.iteritems():
-            if key.find('time') > -1:
-                value = datetime.utcfromtimestamp(value)
-            origin[key] = value
-        
-        geodict = {}
-        xvar = f['x'][:]
-        yvar = f['y'][:]
-        geodict['xmin'] = xvar[0]
-        geodict['xmax'] = xvar[-1]
-        geodict['ymin'] = yvar[0]
-        geodict['ymax'] = yvar[-1]
-        geodict['nrows'] = len(yvar)
-        geodict['ncols'] = len(xvar)
-        geodict['xdim'] = xvar[1]-xvar[0]
-        geodict['ydim'] = yvar[1]-yvar[0]
-        layers = OrderedDict()
-        dictDict = {}
-        for key in f.keys():
-            keytype = str(type(f[key]))
-            if keytype.find('Dataset') > -1:
-                if key in REQUIRED_DATASETS:
-                    continue
-                try:
-                    layers[key] = f[key][:]
-                except:
-                    pass
-            else: #we have a group
-                if key in REQUIRED_GROUPS or key in REQUIRED_DATASETS:
-                    continue
-                tdict = {}
-                for tkey,tvalue in f[key].attrs.iteritems():
-                    tdict[key] = f[key].attrs[tkey]
-                dictDict[key] = tdict.copy()
-
+    def getFileType(cls,grdfile):
+        f = open(grdfile,'rb')
+        #check to see if it's HDF or CDF
+        f.seek(1,0)
+        hdfsig = ''.join(struct.unpack('ccc',f.read(3)))
+        ftype = 'unknown'
+        if hdfsig == 'HDF':
+            ftype = 'hdf'
+        else:
+            f.seek(0,0)
+            cdfsig = ''.join(struct.unpack('ccc',f.read(3)))
+            if cdfsig == 'CDF':
+                ftype = 'netcdf'
+            else:
+                ftype = 'unknown'
         f.close()
+        return ftype
+            
+    @classmethod
+    def load(cls,filename):
+        ftype = cls.getFileType(filename)
+        if ftype == 'hdf':
+            f = h5py.File(filename, "r")
+            REQUIRED_GROUPS = ['origin','header']
+            REQUIRED_DATASETS = ['x','y']
+            for group in REQUIRED_GROUPS:
+                if group not in f.keys():
+                    raise DataSetException('Missing required metadata group "%s"' % group)
+            for dset in REQUIRED_DATASETS:
+                if dset not in f.keys():
+                    raise DataSetException('Missing required data set "%s"' % dset)
+
+            header = {}
+            for key,value in f['header'].attrs.iteritems():
+                if key.find('time') > -1:
+                    value = datetime.utcfromtimestamp(value)
+                header[key] = value
+
+            origin = {}
+            for key,value in f['origin'].attrs.iteritems():
+                if key.find('time') > -1:
+                    value = datetime.utcfromtimestamp(value)
+                origin[key] = value
+
+            geodict = {}
+            xvar = f['x'][:]
+            yvar = f['y'][:]
+            geodict['xmin'] = xvar[0]
+            geodict['xmax'] = xvar[-1]
+            geodict['ymin'] = yvar[0]
+            geodict['ymax'] = yvar[-1]
+            geodict['nrows'] = len(yvar)
+            geodict['ncols'] = len(xvar)
+            geodict['xdim'] = xvar[1]-xvar[0]
+            geodict['ydim'] = yvar[1]-yvar[0]
+            layers = OrderedDict()
+            dictDict = {}
+            for key in f.keys():
+                keytype = str(type(f[key]))
+                if keytype.find('Dataset') > -1:
+                    if key in REQUIRED_DATASETS:
+                        continue
+                    try:
+                        layers[key] = f[key][:]
+                    except:
+                        pass
+                else: #we have a group
+                    if key in REQUIRED_GROUPS or key in REQUIRED_DATASETS:
+                        continue
+                    tdict = {}
+                    for tkey,tvalue in f[key].attrs.iteritems():
+                        tdict[key] = f[key].attrs[tkey]
+                    dictDict[key] = tdict.copy()
+            f.close()
+            
+        elif ftype == 'netcdf':
+            HEADERKEYS = ['type','version','process_time','code_version','originator','product_id','map_status','event_type']
+            ORIGINKEYS = ['id','source','time','lat','lon','depth','magnitude']
+            cdf = netcdf.netcdf_file(filename)
+            xvar = cdf.variables['x'].data.copy()
+            yvar = cdf.variables['y'].data.copy()
+            header = {}
+            for key in HEADERKEYS:
+                hkey = 'header_%s' % key
+                if not hasattr(cdf,hkey):
+                    raise DataSetException('Missing required attribute %s' % hkey)
+                header[key] = getattr(cdf,hkey)
+                if key.find('time') > -1:
+                    header[key] = datetime.utcfromtimestamp(header[key])
+            origin = {}
+            for key in ORIGINKEYS:
+                okey = 'origin_%s' % key
+                if not hasattr(cdf,okey):
+                    raise DataSetException('Missing required attribute %s' % okey)
+                origin[key] = getattr(cdf,okey)
+                if key.find('time') > -1:
+                    header[key] = datetime.utcfromtimestamp(header[key])
+            layers = OrderedDict()
+            for key in cdf.variables.keys():
+                if key in ['x','y']:
+                    continue
+                layers[key] = cdf.variables[key].copy()
+            cdf.close()
+        else:
+            raise DataSetException('Unknown file type for file %s' % filename)
         cls(layers,geodict,origin,header,dictdict=dictDict)
         
 

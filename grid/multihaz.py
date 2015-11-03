@@ -212,6 +212,6 @@ if __name__ == '__main__':
     hdfmb = os.path.getsize('test.hdf')/float(1e6)
     xmltime = (t2-t1).seconds + (t2-t1).microseconds/float(1e6)
     hdftime = (t4-t3).seconds + (t4-t3).microseconds/float(1e6)
-    print 'Input XML file size: %.1f MB (loading time %.1f seconds)' % (xmlmb,xmltime)
-    print 'Output HDF file size: %.1f MB (loading time %.1f seconds)' % (hdfmb,hdftime)
+    print 'Input XML file size: %.2f MB (loading time %.3f seconds)' % (xmlmb,xmltime)
+    print 'Output HDF file size: %.2f MB (loading time %.3f seconds)' % (hdfmb,hdftime)
     os.remove('test.hdf')    

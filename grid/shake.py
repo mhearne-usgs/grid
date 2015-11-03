@@ -448,6 +448,12 @@ def _trim_test(shakefile):
     grid = ShakeGrid.load(shakefile)
     grid.trim(newbounds)
 
+def _read_test(xmlfile):
+    try:
+        shakegrid = ShakeGrid.load(xmlfile)
+    except Exception,error:
+        print 'Failed to read grid.xml format file "%s". Error "%s".' % (xmlfile,str(error))
+    
 def _save_test():
     try:
         print 'Testing save/read functionality for shakemap grids...'
@@ -564,7 +570,9 @@ def _save_test():
     
                  
 if __name__ == '__main__':
-    # shakefile = sys.argv[1]
+    if len(sys.argv) > 1:
+        shakefile = sys.argv[1]
+        _read_test(shakefile)
     # _trim_test(shakefile)
     _save_test()
     

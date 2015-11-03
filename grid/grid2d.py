@@ -3,13 +3,23 @@
 #stdlib imports
 import abc
 import textwrap
+import glob
+import os
 
 #third party imports
 from gridbase import Grid
 from dataset import DataSetException
 import numpy as np
 from scipy import interpolate
+import shapely
+from affine import Affine
+from rasterio import features
+from shapely.geometry import MultiPoint,Polygon,mapping
 
+def testGeoJSON(obj):
+    if hasattr(obj,'has_key') and obj.has_key('geometry') and obj.has_key('properties'):
+        return True
+    return False
 
 class Grid2D(Grid):
     """
@@ -114,6 +124,13 @@ class Grid2D(Grid):
     def load(filename,bounds=None,resample=False,padValue=None):
         raise NotImplementedError('Load method not implemented in base class')
 
+    @classmethod
+    def copyFromGrid(cls,grid):
+        if not isinstance(grid,Grid2D):
+            raise DataSetException('Input to copyFromGrid must be an instance of a Grid2D object (inc. subclasses)')
+        cls(grid.getData(),grid.getGeoDict())
+
+    
     #This should be a @classmethod in subclasses
     @abc.abstractmethod
     def save(self,filename): #would we ever want to save a subset of the data?
@@ -423,6 +440,100 @@ class Grid2D(Grid):
         self._geodict['xdim'] = geodict['xdim']
         self._geodict['ydim'] = geodict['ydim']
 
+    @classmethod
+    def rasterizeFromGeometry(cls,shapes,samplegeodict,burnValue=1.0,fillValue=np.nan,allTouched=True,attribute=None):
+        """
+        Create a Grid2D object from vector shapes, where the presence of a shape (point, line, polygon) inside a cell turns that cell "on".
+        :param shapes:
+          One of:
+            - One shapely geometry object (Point, Polygon, etc.) or a sequence of such objects
+            - One GeoJSON like object or sequence of such objects. (http://geojson.org/)
+            - A tuple of (geometry,value) or sequence of (geometry,value).
+        :param samplegeodict:
+          GeoDict with at least xmin,xmax,ymin,ymax,xdim,ydim values set.
+        :param burnValue:
+          Optional value which will be used to set the value of the pixels if there is no value in the geometry field.
+        :param fillValue:
+          Optional value which will be used to fill the cells not touched by any geometry.
+        :param allTouched:
+          Optional boolean which indicates whether the geometry must touch the center of the cell or merely be inside the cell in order to set the value.
+        :raises DataSetException:
+          When geometry input is not a subclass of shapely.geometry.base.BaseGeometry.
+        :returns:
+          Grid2D object.
+        This method is a thin wrapper around rasterio->features->rasterize(), documented here:
+        https://github.com/mapbox/rasterio/blob/master/docs/features.rst
+
+        which is itself a Python wrapper around the functionality found in gdal_rasterize, documented here:
+        http://www.gdal.org/gdal_rasterize.html
+        """
+        #check the type of shapes
+        #features.rasterize() documentation says this:
+        #iterable of (geometry, value) pairs or iterable over
+        #geometries. `geometry` can either be an object that implements
+        #the geo interface or GeoJSON-like object.
+
+        #figure out whether this is a single shape or a sequence of shapes
+        isGeoJSON = False
+        isGeometry = False
+        isSequence = False
+        isTuple = False
+        if hasattr(shapes, '__iter__'):
+            if isinstance(shapes[0],tuple):
+                isTuple = True
+        isOk = False
+        isShape = False
+        if isinstance(shapes,shapely.geometry.base.BaseGeometry):
+            isOk = True
+            isShape = True
+        elif len(shapes) and isinstance(shapes[0],shapely.geometry.base.BaseGeometry):
+            isOk = True
+            isShape = True
+        elif isinstance(shapes,dict) and shapes.has_key('geometry') and shapes.has_key('properties'):
+            isOk = True
+        elif len(shapes) and isinstance(shapes[0],dict) and shapes[0].has_key('geometry') and shapes[0].has_key('properties'):
+            isOk = True
+        else:
+            pass
+        if not isOk:
+            raise DataSetException('shapes must be a single shapely object or sequence of them, or single Geo-JSON like-object')
+
+        if not isShape:
+            shapes2 = []
+            for shape in shapes:
+                geometry = shape['geometry']
+                props = shape['properties']
+                if attribute is not None:
+                    if not props.has_key(attribute):
+                        raise DataSetException('Input shapes do not have attribute "%s".' % attribute)
+                    value = props[attribute]
+                    if not isinstance(value (int,float,long)):
+                        raise DataSetException('value from input shapes object is not a number')
+                else:
+                    value = burnValue
+                shapes2.append((geometry,value))
+            shapes = shapes2
+        
+                                   
+        xmin,xmax,ymin,ymax = (samplegeodict['xmin'],samplegeodict['xmax'],samplegeodict['ymin'],samplegeodict['ymax'])
+        xdim,ydim = (samplegeodict['xdim'],samplegeodict['ydim'])
+
+        xvar = np.arange(xmin,xmax+xdim,xdim)
+        yvar = np.arange(ymin,ymax+ydim,ydim)
+        ncols = len(xvar)
+        nrows = len(yvar)
+        
+        #the rasterize function assumes a pixel registered data set, where we are grid registered.  In order to make this work
+        #we need to adjust the edges of our grid out by half a cell width in each direction.  
+        txmin = xmin - xdim/2.0
+        tymax = ymax + ydim/2.0
+        
+        outshape = (nrows,ncols)
+        transform = Affine.from_gdal(txmin,xdim,0.0,tymax,0.0,-ydim)
+        img = features.rasterize(shapes,out_shape=outshape,fill=fillValue,transform=transform,all_touched=allTouched,default_value=burnValue)
+        geodict = {'xmin':xmin,'xmax':xmax,'ymin':ymin,'ymax':ymax,'xdim':xdim,'ydim':ydim,'nrows':nrows,'ncols':ncols}
+        return cls(img,geodict)
+        
 def _test_basics():
     geodict = {'xmin':0.5,'xmax':3.5,'ymin':0.5,'ymax':3.5,'xdim':1.0,'ydim':1.0,'nrows':4,'ncols':4}
     data = np.arange(0,16).reshape(4,4)
@@ -493,8 +604,49 @@ def _test_interpolate():
             pass
         np.testing.assert_almost_equal(grid.getData(),output)
         print 'Passed interpolate with method "%s".' % method
+
+def _test_rasterize():
+    samplegeodict = {'xmin':0.5,'xmax':3.5,'ymin':0.5,'ymax':3.5,'xdim':1.0,'ydim':1.0}
+    print 'Testing rasterizeFromGeometry() trying to get binary output...'
+    points = MultiPoint([(0.25,3.5,5.0),
+                         (1.75,3.75,6.0),
+                         (1.0,2.5,10.0),
+                         (3.25,2.5,17.0),
+                         (1.5,1.5,1.0),
+                         (3.25,0.5,86.0)])
+    
+    grid = Grid2D.rasterizeFromGeometry(points,samplegeodict,burnValue=1.0,fillValue=0.0)
+    output = np.array([[1.0,1.0,0.0,0.0],
+                       [0.0,1.0,0.0,1.0],
+                       [0.0,1.0,0.0,0.0],
+                       [0.0,0.0,0.0,1.0]])
+    np.testing.assert_almost_equal(grid.getData(),output)
+    print 'Passed rasterizeFromGeometry() trying to get binary output.'
+
+    try:
+        print 'Testing rasterizeFromGeometry() burning in values from a polygon sequence...'
+        #Define two simple polygons and assign them to shapes
+        poly1 = [(0.25,3.75),(1.25,3.25),(1.25,2.25)]
+        poly2 = [(2.25,3.75),(3.25,3.75),(3.75,2.75),(3.75,1.50),(3.25,0.75),(2.25,2.25)]
+        shape1 = {'properties':{'value':5},'geometry':mapping(Polygon(poly1))}
+        shape2 = {'properties':{'value':7},'geometry':mapping(Polygon(poly2))}
+        shapes = [shape1,shape2]
+        
+        grid = Grid2D.rasterizeFromGeometry(shapes,samplegeodict,fillValue=0,attribute='value')
+        output = np.array([[5,5,7,7],
+                           [5,5,7,7],
+                           [0,0,7,7],
+                           [0,0,0,7]])
+        np.testing.assert_almost_equal(grid.getData(),output)
+        print 'Testing rasterizeFromGeometry() burning in values from a polygon shapefile...'
+    except:
+        shpfiles = glob.glob('test.*')
+        for shpfile in shpfiles:
+            os.remove(shpfile)
+    
     
 if __name__ == '__main__':
+    _test_rasterize()
     _test_basics()
     _test_resample()
     _test_interpolate()

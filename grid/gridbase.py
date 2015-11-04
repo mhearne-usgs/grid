@@ -116,7 +116,7 @@ class Grid(DataSet):
         :returns:
           An instance of a Grid object.
         """
-    
+        raise NotImplementedError
     
     @staticmethod
     def getLatLonMesh(geodict):

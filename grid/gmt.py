@@ -652,12 +652,38 @@ class GMTGrid(Grid2D):
             z[:] = np.flipud(self._data)
             f.close()
         elif format == 'hdf':
+            #Create the file and the top-level attributes GMT wants to see
             f = h5py.File(filename,'w')
+            f.attrs['Conventions'] = 'COARDS, CF-1.5'
+            f.attrs['title'] = 'filename'
+            f.attrs['history'] = 'Created with python GMTGrid.save(%s,format="hdf")' % filename
+            f.attrs['GMT_version'] = 'NA'
+
+            #Create the x array and the attributes of that GMT wants to see
             xvar = np.linspace(self._geodict['xmin'],self._geodict['xmax'],self._geodict['ncols'])
+            x = f.create_dataset('x',data=xvar,shape=xvar.shape,dtype=str(xvar.dtype))
+            x.attrs['CLASS'] = 'DIMENSION_SCALE'
+            x.attrs['NAME'] = 'x'
+            x.attrs['_Netcdf4Dimid'] = 0 #no idea what this is
+            x.attrs['long_name'] = 'x'
+            x.attrs['actual_range'] = np.array((xvar[0],xvar[-1]))
+
+            #Create the x array and the attributes of that GMT wants to see
             yvar = np.linspace(self._geodict['ymin'],self._geodict['ymax'],self._geodict['nrows'])
-            x = f.create_dataset('x',data=xvar)
-            y = f.create_dataset('y',data=yvar)
-            z = f.create_dataset('z',data=np.flipud(self._data))
+            y = f.create_dataset('y',data=yvar,shape=yvar.shape,dtype=str(yvar.dtype))
+            y.attrs['CLASS'] = 'DIMENSION_SCALE'
+            y.attrs['NAME'] = 'y'
+            y.attrs['_Netcdf4Dimid'] = 1 #no idea what this is
+            y.attrs['long_name'] = 'y'
+            y.attrs['actual_range'] = np.array((yvar[0],yvar[-1]))
+            
+            #create the z data set
+            z = f.create_dataset('z',data=np.flipud(self._data),shape=self._data.shape,dtype=str(self._data.dtype))
+            z.attrs['long_name'] = 'z'
+            #zvar.attrs['_FillValue'] = array([ nan], dtype=float32)
+            z.attrs['actual_range'] = np.array((np.nanmin(self._data),np.nanmax(self._data)))
+            
+            #close the hdf file
             f.close()
         elif format == 'native':
             f = open(filename,'w')

@@ -54,11 +54,19 @@ class MultiHazardGrid(MultiGrid):
                 self._layers[layerkey] = Grid2D(data=layerdata,geodict=geodict)
             except:
                 pass
-        self._setHeader(header)
-        self._setOrigin(origin)
-        self._metadata = metadata.copy()
+        self.setHeader(header)
+        self.setOrigin(origin)
+        self.setMetadata(metadata)
 
     def _saveDict(self,group,mydict):
+        """
+        Recursively save dictionaries into groups in an HDF file.
+        :param group:
+          HDF group object to contain a given dictionary of data in HDF file.
+        :param mydict:
+          Dictionary of values to save in group.  Dictionary can contain objects of the following types:
+            - str,unicode,int,float,long,list,tuple,np.ndarray,dict,datetime.datetime,collections.OrderedDict
+        """
         ALLOWED = [str,unicode,int,float,
                    long,list,tuple,np.ndarray,
                    dict,datetime.datetime,
@@ -77,6 +85,12 @@ class MultiHazardGrid(MultiGrid):
 
     @classmethod
     def _loadDict(cls,group):
+        """Recursively load dictionaries from groups in an HDF file.
+        :param group:
+          HDF5 group object.
+        :returns:
+          Dictionary of metadata (possibly containing other dictionaries).
+        """
         tdict = {}
         for key,value in group.attrs.iteritems(): #attrs are NOT subgroups
             if key.find('time') > -1:
@@ -87,8 +101,23 @@ class MultiHazardGrid(MultiGrid):
         return tdict
                 
             
-    def save(self,filename,format='hdf'):
+    def save(self,filename):
+        """
+        Save MultiHazardGrid object to HDF file.  
+        Georeferencing information will be saved as datasets "x" and "y".  Layers will be saved as 
+        datasets named by layer keys.  Dictionaries contained in "origin", and "header" will be saved in
+        groups of those same names.  Dictionaries contained in the "metadata" dictionary will be contained
+        in a series of recursive groups under a group called "metadata".
+        :param filename:
+          Output desired filename (HDF format).
+        """
         f = h5py.File(filename, "w")
+        #Add in some attributes that will help make this GMT friendly...
+        f.attrs['Conventions'] = 'COARDS, CF-1.5'
+        f.attrs['title'] = 'filename'
+        f.attrs['history'] = 'Created with python MultiHazardGrid.save(%s)' % filename
+        f.attrs['GMT_version'] = 'NA'
+        
         #create two top-level groups that should always be present
         header = f.create_group('header')
         self._saveDict(header,self._header)
@@ -102,15 +131,36 @@ class MultiHazardGrid(MultiGrid):
 
         xvar = np.linspace(self._geodict['xmin'],self._geodict['xmax'],self._geodict['ncols'])
         yvar = np.linspace(self._geodict['ymin'],self._geodict['ymax'],self._geodict['nrows'])
-        x = f.create_dataset('x',data=xvar,compression='gzip')
-        y = f.create_dataset('y',data=yvar,compression='gzip')
+        x = f.create_dataset('x',data=xvar,compression='gzip',shape=xvar.shape,dtype=str(xvar.dtype))
+        x.attrs['CLASS'] = 'DIMENSION_SCALE'
+        x.attrs['NAME'] = 'x'
+        x.attrs['_Netcdf4Dimid'] = 0 #no idea what this is
+        x.attrs['long_name'] = 'x'
+        x.attrs['actual_range'] = np.array((xvar[0],xvar[-1]))
+        
+        y = f.create_dataset('y',data=yvar,compression='gzip',shape=yvar.shape,dtype=str(yvar.dtype))
+        y.attrs['CLASS'] = 'DIMENSION_SCALE'
+        y.attrs['NAME'] = 'y'
+        y.attrs['_Netcdf4Dimid'] = 1 #no idea what this is
+        y.attrs['long_name'] = 'y'
+        y.attrs['actual_range'] = np.array((yvar[0],yvar[-1]))
+        
         for layerkey,layer in self._layers.iteritems():
             dset = f.create_dataset(layerkey,data=layer.getData(),compression='gzip')
-
+            dset.attrs['long_name'] = layerkey
+            dset.attrs['actual_range'] = np.array((np.nanmin(layer._data),np.nanmax(layer._data)))
+            
         f.close()
 
     @classmethod
     def load(cls,filename):
+        """
+        Load data from an HDF file into a MultiHazardGrid object.
+        :param filename:
+          HDF file containing data and metadata for ShakeMap or Secondary Hazards data.
+        :returns:
+          MultiHazardGrid object.
+        """
         f = h5py.File(filename, "r")
         REQUIRED_GROUPS = ['origin','header']
         REQUIRED_DATASETS = ['x','y']
@@ -160,19 +210,76 @@ class MultiHazardGrid(MultiGrid):
         cls(layers,geodict,origin,header,metadata=metadata)
         
 
-    def _validateDict(self,tdict):
-        ALLOWED = ['str','unicode','int','float','long','list','tuple','numpy.ndarray']
-        #input dict can only have strings, numbers, lists, tuples, or numpy arrays as values (no sub-dictionaries)
-        for key,value in tdict.iteritems():
-            tvalue = type(value)
-            if tvalue not in ALLOWED:
-                raise DataSetException('Data type "%s" not allowed in MultiHazardGrid extra metadata' % tvalue)
+    # def _validateDict(self,tdict):
+    #     ALLOWED = ['str','unicode','int','float','long','list','tuple','numpy.ndarray']
+    #     #input dict can only have strings, numbers, lists, tuples, or numpy arrays as values (no sub-dictionaries)
+    #     for key,value in tdict.iteritems():
+    #         tvalue = type(value)
+    #         if tvalue not in ALLOWED:
+    #             raise DataSetException('Data type "%s" not allowed in MultiHazardGrid extra metadata' % tvalue)
 
-    def _setHeader(self,header):
+    def setHeader(self,header):
+        """
+        Set the header dictionary.
+        :param header:
+          Dictionary with elements:
+            - type Type of multi-layer earthquake induced hazard ('shakemap','gfe')
+            - version Integer product version (1)
+            - process_time Python datetime indicating when data was created.
+            - code_version String version of code that created this file (i.e.,'4.0')
+            - originator String representing network that created the hazard grid.
+            - product_id String representing the ID of the product (may be different from origin ID)
+            - map_status String, one of RELEASED, ??
+            - event_type String, one of ['ACTUAL','SCENARIO']
+        """
         self._header = header.copy() #validate later
 
-    def _setOrigin(self,origin):
+    def setOrigin(self,origin):
+        """
+        Set the origin dictionary.
+        Dictionary with elements:
+            - id String of event ID (i.e., 'us2015abcd')
+            - source String containing originating network ('us')
+            - time Float event magnitude
+            - lat Float event latitude
+            - lon Float event longitude
+            - depth Float event depth
+            - magnitude Datetime object representing event origin time.
+        """
         self._origin = origin.copy() #validate later
+
+    def setMetadata(self,metadata):
+        """
+        Set the metadata dictionary.
+        :param metadata:
+          Dictionary of dictionaries of metadata.  Each dictionary can contain any of the following types:
+          str,unicode,int,float,long,list,tuple,np.ndarray,dict,datetime.datetime,collections.OrderedDict.
+        """
+        self._metadata = metadata.copy()
+        
+    def getHeader(self):
+        """
+        Return the header dictionary.
+        :returns:
+          Header dictionary (see setHeader()).
+        """
+        return self._header.copy()
+
+    def getOrigin(self):
+        """
+        Return the origin dictionary.
+        :returns:
+          Origin dictionary (see setOrigin()).
+        """
+        return self._origin.copy()
+
+    def getMetadata(self):
+        """
+        Return the dictionary of arbitrary metadata dictionaries.
+        :returns:
+          A dictionary of dictionaries containing arbitrary metadata.
+        """
+        return self._metadata.copy()
 
 if __name__ == '__main__':
     shakefile = sys.argv[1]
